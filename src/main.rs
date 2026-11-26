@@ -44,14 +44,18 @@ fn main() -> ExitCode {
                 let report = args
                     .get(i + 1)
                     .map_or_else(|| PathBuf::from("selftest.txt"), PathBuf::from);
-                return match selftest::run(&report) {
-                    Ok(0) => ExitCode::SUCCESS,
-                    Ok(_) => ExitCode::from(1),
+                // Exit at once when the report is written: tearing the engine down at the
+                // end of `main` can abort in SpiderMonkey (a mutex still held), which
+                // would turn a passing run into a failing exit code.
+                let code = match selftest::run(&report) {
+                    Ok(0) => 0,
+                    Ok(_) => 1,
                     Err(e) => {
                         eprintln!("eon-browser: self-test could not run: {e}");
-                        ExitCode::from(2)
+                        2
                     }
                 };
+                std::process::exit(code);
             }
             "--private" => private = true,
             other if !other.starts_with("--") => start = url::Url::parse(other).ok(),

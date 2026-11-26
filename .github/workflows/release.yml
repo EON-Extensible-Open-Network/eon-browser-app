@@ -48,6 +48,9 @@ jobs:
           get easylist-cookie  https://secure.fanboy.co.nz/fanboy-cookiemonster.txt
           ls -la seed
           echo "EON_BROWSER_SEED_DIR=$PWD/seed" >> "$GITHUB_ENV"
+      - name: A software OpenGL for the offscreen self-test (the runner has no GPU)
+        if: runner.os == 'Windows'
+        uses: ssciwr/setup-mesa-dist-win@v2
       - run: rustup show
       - run: cargo build --release --locked
       - name: Self-test the binary about to be published

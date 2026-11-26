@@ -82,6 +82,11 @@ struct Tab {
     note: RefCell<Option<String>>,
     /// A harmful-site warning the person chose to pass, once.
     allow_once: RefCell<Option<Url>>,
+    /// The document a sub-resource belongs to, recorded when its main-frame request
+    /// arrives. `WebView::url` can still name the previous page while the new one's first
+    /// requests are already out (seen on macOS), and a request must never be judged
+    /// against the wrong page.
+    top: RefCell<Option<Url>>,
 }
 
 pub struct Browser {
@@ -316,6 +321,7 @@ impl Browser {
                 upgraded_from: RefCell::new(None),
                 note: RefCell::new(None),
                 allow_once: RefCell::new(None),
+                top: RefCell::new(None),
             });
             tabs.len() - 1
         };
@@ -1014,19 +1020,21 @@ impl WebViewDelegate for Browser {
     fn load_web_resource(&self, view: WebView, load: WebResourceLoad) {
         let req = load.request();
         let url = req.url.clone().into_url();
+        let main_frame = req.is_for_main_frame;
+        if main_frame {
+            self.with_tab(&view, |t| *t.top.borrow_mut() = Some(url.clone()));
+        }
         match url.host_str() {
             Some(UI_HOST) => return refuse(load),
             Some(pages::HOST) => return self.serve_page(load, &url),
             _ => {}
         }
-        let main_frame = req.is_for_main_frame;
         let dest = format!("{:?}", req.destination).to_ascii_lowercase();
-        let page = if main_frame {
-            Some(url.clone())
-        } else {
-            view.url()
-        };
-        let page = page.unwrap_or_else(|| url.clone());
+        let page = self
+            .with_tab(&view, |t| t.top.borrow().clone())
+            .flatten()
+            .or_else(|| view.url())
+            .unwrap_or_else(|| url.clone());
         let on = self.profile.site(&page).map_or(true, |s| s.shields)
             && page.host_str() != Some(pages::HOST);
         if on && !main_frame {
