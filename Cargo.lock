@@ -1892,7 +1892,7 @@ dependencies = [
 [[package]]
 name = "eon-browser-core"
 version = "0.0.0-alpha"
-source = "git+https://github.com/EON-Extensible-Open-Network/eon-browser-core?rev=0d08c1649160dc9eb2234f39fc6143daa6a8e5ed#0d08c1649160dc9eb2234f39fc6143daa6a8e5ed"
+source = "git+https://github.com/EON-Extensible-Open-Network/eon-browser-core?rev=2cfb9fd6d21423e1a84b453987f118a3ea26f22c#2cfb9fd6d21423e1a84b453987f118a3ea26f22c"
 dependencies = [
  "adblock",
  "psl",
