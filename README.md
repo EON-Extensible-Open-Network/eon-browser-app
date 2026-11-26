@@ -9,7 +9,7 @@ A web browser on **Servo**, the open engine written in Rust — not Chromium, no
 webview (plan madde 50). Blocking built in, no telemetry, no AI, and no request at all
 until you open a page. Windows, Linux and macOS. **Early alpha.**
 
-![EON Browser showing Wikipedia](docs/window.png)
+![EON Browser on BBC News, 11 trackers blocked](docs/window.png)
 
 ## What it does
 

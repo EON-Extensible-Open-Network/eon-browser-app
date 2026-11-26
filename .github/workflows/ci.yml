@@ -33,6 +33,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - run: cargo build
       - name: Self-test (the real engine, offscreen, no network)
         shell: bash
         run: |

@@ -5,7 +5,26 @@
 
 [advisories]
 yanked = "deny"
-ignore = []
+ignore = [
+    # SQLite before 3.54 can return uninitialized page-cache memory when it opens a
+    # database together with a crafted `-wal` file of another page size (local; the victim
+    # must open the attacker's files). The fix is libsqlite3-sys 0.39 (rusqlite 0.41), but
+    # Servo 0.8 pins rusqlite 0.38 and two SQLite builds cannot link into one program.
+    # Reachability: EON Browser opens only its own profile.sqlite and Servo's own stores,
+    # in its own data folder, files it wrote itself; anyone who can plant a `-wal` there can
+    # already rewrite the profile directly. Remove when Servo moves to rusqlite >= 0.41.
+    "RUSTSEC-2026-0459",
+    # rsa's private-key operations are not constant-time (Marvin). Reached through Servo's
+    # Web Crypto (`subtlecrypto`), which pins rsa =0.10.0-rc.19. The browser holds no RSA
+    # private key of the person (no client certificates); only a key a page imported itself
+    # is used, and a timing leak reveals it at most to code the page runs anyway. Web Crypto
+    # stays on because sign-in pages need it. Remove when Servo takes rsa 0.10.
+    "RUSTSEC-2023-0071",
+    # `cookie`'s PrivateJar can repeat AES-GCM nonces across fork(). Reached through Servo's
+    # cookie parsing; a browser never seals private cookies, and Windows never forks.
+    # Remove when Servo takes the fixed cookie release.
+    "RUSTSEC-2026-0594",
+]
 
 [licenses]
 private = { ignore = true }
