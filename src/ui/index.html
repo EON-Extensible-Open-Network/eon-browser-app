@@ -1,0 +1,49 @@
+<!doctype html>
+<!--
+SPDX-License-Identifier: GPL-3.0-or-later
+SPDX-FileCopyrightText: 2026 EON contributors
+
+EON Browser's own interface: the tab strip and the navigation bar. It is drawn by Servo
+in its own view, above the page, and talks to the browser only through
+https://ui.eon.invalid/cmd -- a host that never resolves and that pages cannot reach.
+It has no other network access and is handed what a person reads: titles, addresses,
+counts. (madde 50)
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>EON Browser</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="strip" id="strip">
+    <div class="tabs" id="tabs" role="tablist" aria-label="Tabs"></div>
+    <button class="icon new-tab" id="new-tab" title="New tab (Ctrl+T)" aria-label="New tab">
+      <img src="icons/plus.svg" alt="">
+    </button>
+    <div class="spacer"></div>
+    <div class="private-badge" id="private" hidden>Private</div>
+  </header>
+
+  <nav class="bar">
+    <button class="icon" id="back" title="Back (Alt+Left)" aria-label="Back"><img src="icons/back.svg" alt=""></button>
+    <button class="icon" id="forward" title="Forward (Alt+Right)" aria-label="Forward"><img src="icons/forward.svg" alt=""></button>
+    <button class="icon" id="reload" title="Reload (F5)" aria-label="Reload"><img src="icons/reload.svg" alt=""></button>
+
+    <div class="field" id="field">
+      <span class="lock" id="lock" title=""><img src="icons/lock.svg" alt=""></span>
+      <input id="address" type="text" spellcheck="false" autocomplete="off"
+             placeholder="Search, or type an address" aria-label="Address and search">
+      <span class="note" id="note" hidden></span>
+    </div>
+
+    <button class="shield" id="shield" title="" aria-label="Blocking on this site">
+      <img src="icons/shield.svg" alt=""><span id="blocked">0</span>
+    </button>
+  </nav>
+
+  <ul class="suggest" id="suggest" role="listbox" hidden></ul>
+
+  <script src="app.js"></script>
+</body>
+</html>

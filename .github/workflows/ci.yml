@@ -1,0 +1,111 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt · clippy · test · selftest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux libraries (windowing, GL, fonts) and a software GL for the self-test
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev \
+            libxkbcommon-x11-0 libwayland-dev libegl1-mesa-dev libgl1-mesa-dri libgles2-mesa-dev \
+            libfontconfig1-dev libfreetype6-dev libdbus-1-dev libudev-dev
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - name: Self-test (the real engine, offscreen, no network)
+        shell: bash
+        run: |
+          mkdir -p st
+          target/debug/eon-browser --selftest st/report.txt || { cat st/report.txt; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest-${{ matrix.os }}
+          path: st/
+
+  invariants:
+    name: project invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No telemetry (madde 36)
+        run: |
+          if grep -rIn -iE 'telemetry|analytics|sentry|mixpanel|posthog|crashpad|breakpad' src Cargo.toml | grep -viE 'no telemetry|google.analytics'; then
+            echo "::error::telemetry-shaped code found (madde 36)"
+            exit 1
+          fi
+      - name: Not Chromium, not a system webview (madde 50a)
+        run: |
+          if grep -nE '^\s*(tauri|wry|webview2|webview2-com|cef|cef-rs|chromiumoxide|webkit2gtk)\b' Cargo.toml; then
+            echo "::error::EON Browser runs on Servo only"
+            exit 1
+          fi
+      - name: The bar reaches nothing but its own bridge
+        run: |
+          if grep -nE "fetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource" src/ui/*.js | grep -v "https://ui.eon.invalid/cmd"; then
+            echo "::error::the bar talks only to https://ui.eon.invalid/cmd"
+            exit 1
+          fi
+      - name: No AI, no affiliate rewriting (madde 50d)
+        run: |
+          if grep -rnE -i 'openai|anthropic|gemini|copilot|llm|affiliate_tag|add_affiliate' src; then
+            echo "::error::madde 50d forbids this"
+            exit 1
+          fi
+
+  deny:
+    name: licences · advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check all
+
+  reuse:
+    name: licence headers (REUSE)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: fsfe/reuse-action@v5
+
+  dco:
+    name: signed-off commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Every commit must carry Signed-off-by
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          missing=0
+          while read -r sha; do
+            if ! git log -1 --format=%B "$sha" | grep -qiE '^Signed-off-by: .+ <.+@.+>$'; then
+              echo "::error::missing Signed-off-by: $(git log -1 --oneline "$sha")"
+              missing=1
+            fi
+          done < <(git rev-list "$base..$head")
+          exit $missing

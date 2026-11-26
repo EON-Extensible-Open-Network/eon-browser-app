@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 EON contributors
+
+[package]
+name = "eon-browser"
+description = "EON Browser: a web browser on Servo, not Chromium. Blocking built in, no telemetry, no AI, no request until you open a page."
+# Tag v0.0.0 -> 0.0.0-alpha.
+version = "0.0.0-alpha"
+edition = "2021"
+rust-version = "1.98"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/EON-Extensible-Open-Network/eon-browser-app"
+publish = false
+
+# Every dependency is a supply-chain commitment (madde 37); each says why it is here.
+[dependencies]
+# The policy: blocking, link cleaning, HTTPS-only, address bar, profile, user agent.
+# Pinned by commit and version (a bare git dependency is a wildcard to cargo-deny).
+eon-browser-core = { git = "https://github.com/EON-Extensible-Open-Network/eon-browser-core", rev = "0d08c1649160dc9eb2234f39fc6143daa6a8e5ed", version = "0.0.0-alpha" }
+# The engine (madde 50a). Pinned exactly: its API breaks every month.
+# Default features minus devtools (no debugging server can be opened), plus what sites
+# need that the defaults leave out: Web Crypto (sign-in pages) and Brotli streams.
+# WebGPU stays out (attack surface; off by preference too). WebGL (it needs libclang to
+# build ANGLE's translator) and video through GStreamer come in v0.0.1.
+servo = { version = "=0.8.0", default-features = false, features = ["bundled", "clipboard", "js_jit", "multiprocess", "subtlecrypto", "brotli-compression-stream"] }
+# The window and its events, on Windows, Linux and macOS. The version Servo's own
+# embedding example is written against.
+winit = "0.30.13"
+# Geometry types in Servo's API (the version Servo uses).
+euclid = "0.22.14"
+dpi = "0.1.2"
+url = "2.5.9"
+# Servo's TLS needs a process-wide crypto provider installed by the embedder.
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs"] }
+# Response headers for what the browser answers itself (its bar, its own pages).
+http = "1.4"
+# Messages between the interface and the browser.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+needless_pass_by_value = "allow"

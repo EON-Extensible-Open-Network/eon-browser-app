@@ -1,0 +1,1118 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 EON contributors
+
+//! The browser: tabs on Servo, with `eon-browser-core`'s policy applied to every request
+//! and every navigation, and the bar (the "chrome") kept up to date.
+//!
+//! Two kinds of view, two delegates:
+//!
+//! - **Pages** ([`Browser`] is their delegate). Every request goes through the shield,
+//!   every navigation through link cleaning and HTTPS-only. They cannot reach the bar's
+//!   bridge (`ui.eon.invalid`).
+//! - **The bar** ([`Chrome`]). It loads only its own files and talks to the browser
+//!   through `https://ui.eon.invalid/cmd`. Nothing it does reaches the network.
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::rc::{Rc, Weak};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use eon_browser_core::lists::Lists;
+use eon_browser_core::omnibox::{self, Target};
+use eon_browser_core::profile::{Profile, Session, Tab as SavedTab, WindowState};
+use eon_browser_core::search::{self, SearchEngine};
+use eon_browser_core::shield::{self, Kind, Request, Shield, Verdict};
+use eon_browser_core::upgrade::Upgrade;
+use eon_browser_core::{fingerprint, navigate};
+use euclid::Scale;
+use http::{HeaderMap, HeaderValue, StatusCode};
+use serde::Serialize;
+use servo::{
+    CreateNewWebViewRequest, Cursor, JSValue, LoadStatus, NavigationRequest, PermissionRequest,
+    RenderingContext, Servo, UserContentManager, UserScript, WebResourceLoad, WebResourceResponse,
+    WebView, WebViewBuilder, WebViewDelegate,
+};
+use url::Url;
+
+use crate::input::Shortcut;
+use crate::pages;
+use crate::paths::Settings;
+
+pub const UI_HOST: &str = "ui.eon.invalid";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// What the browser needs from whatever shows it: a window, or nothing (the self-test).
+pub trait Host {
+    fn redraw(&self);
+    fn set_cursor(&self, cursor: Cursor);
+    fn set_title(&self, title: &str);
+    /// The bar asks for this much height (CSS pixels): more while suggestions are open.
+    fn chrome_height(&self, css_px: u32);
+    fn focus_page(&self);
+    fn open_private_window(&self) {}
+}
+
+/// Pages served instead of the network, for the self-test: `host + path` → (type, body).
+#[derive(Default)]
+pub struct Fixtures(pub HashMap<String, (&'static str, Vec<u8>)>);
+
+impl Fixtures {
+    fn get(&self, url: &Url) -> Option<&(&'static str, Vec<u8>)> {
+        self.0
+            .get(&format!("{}{}", url.host_str().unwrap_or(""), url.path()))
+    }
+}
+
+/// How the browser is started.
+pub struct Options {
+    pub private: bool,
+    pub data: PathBuf,
+    pub fixtures: Option<Fixtures>,
+    /// Rules to use instead of the stored lists (the self-test).
+    pub rules: Option<String>,
+}
+
+struct Tab {
+    view: WebView,
+    blocked: Cell<u32>,
+    /// The `http://` address this load was upgraded from, to offer HTTP if HTTPS fails.
+    upgraded_from: RefCell<Option<Url>>,
+    /// What the last navigation's cleaning did, for the bar.
+    note: RefCell<Option<String>>,
+    /// A harmful-site warning the person chose to pass, once.
+    allow_once: RefCell<Option<Url>>,
+}
+
+pub struct Browser {
+    servo: Servo,
+    page_ctx: Rc<dyn RenderingContext>,
+    scale: Cell<f32>,
+    ucm: Rc<UserContentManager>,
+    ui: RefCell<Option<WebView>>,
+    tabs: RefCell<Vec<Tab>>,
+    active: Cell<usize>,
+    profile: Profile,
+    shield: Shield,
+    settings: RefCell<Settings>,
+    engines: Vec<SearchEngine>,
+    private: bool,
+    data: PathBuf,
+    host: Box<dyn Host>,
+    fixtures: Option<Fixtures>,
+    me: RefCell<Weak<Browser>>,
+    ui_dirty: Cell<bool>,
+    /// Scripts to run in a page on the next turn: Servo cannot start an evaluation from
+    /// inside another one's callback.
+    deferred: RefCell<Vec<(WebView, String)>>,
+    /// Every address a page asked the network for (the self-test reads it).
+    pub requests: RefCell<Vec<String>>,
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// A JavaScript statement that adds `css` to the page as a stylesheet.
+fn inject_css(css: &str) -> String {
+    let lit = serde_json::to_string(css).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        "(()=>{{const s=document.createElement('style');s.dataset.eon='shield';s.textContent={lit};\
+         (document.head||document.documentElement).appendChild(s);}})()"
+    )
+}
+
+/// Answer an intercepted request with `body`.
+pub fn respond(load: WebResourceLoad, status: StatusCode, mime: &str, body: Vec<u8>) {
+    let url = load.request().url.clone().into_url();
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(mime) {
+        headers.insert(http::header::CONTENT_TYPE, v);
+    }
+    headers.insert(
+        http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    let mut intercepted = load.intercept(
+        WebResourceResponse::new(url)
+            .status_code(status)
+            .headers(headers),
+    );
+    intercepted.send_body_data(body);
+    intercepted.finish();
+}
+
+/// Refuse an intercepted request (it fails like a network error).
+pub fn refuse(load: WebResourceLoad) {
+    let url = load.request().url.clone().into_url();
+    load.intercept(WebResourceResponse::new(url)).cancel();
+}
+
+/// The data-URL seeding and the compiled lists.
+fn build_shield(data: &std::path::Path, rules: Option<&str>) -> Shield {
+    if let Some(r) = rules {
+        return Shield::from_rules(r);
+    }
+    let lists = Lists::load(&data.join("lists")).map(|mut l| {
+        for (id, text) in crate::seed::SEED {
+            // A snapshot that fails the checks is skipped, not fatal.
+            let _ = l.seed(id, text, crate::seed::SEED_AT);
+        }
+        l
+    });
+    match lists {
+        Ok(l) => Shield::build_cached(&l, &data.join("cache"))
+            .or_else(|_| Shield::build(&l))
+            .unwrap_or_else(|_| Shield::from_rules("")),
+        Err(_) => Shield::from_rules(""),
+    }
+}
+
+impl Browser {
+    pub fn new(
+        servo: Servo,
+        page_ctx: Rc<dyn RenderingContext>,
+        scale: f32,
+        host: Box<dyn Host>,
+        options: Options,
+    ) -> Rc<Browser> {
+        let profile = if options.private {
+            Profile::in_memory()
+        } else {
+            Profile::open(&options.data.join("profile")).or_else(|_| Profile::in_memory())
+        };
+        // In-memory always opens; the error case is unreachable in practice, and a
+        // browser without history is still a browser.
+        let profile = match profile {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("eon-browser: no profile ({e}); continuing without one");
+                match Profile::in_memory() {
+                    Ok(p) => p,
+                    Err(_) => std::process::exit(2),
+                }
+            }
+        };
+        let ucm = Rc::new(UserContentManager::new(&servo));
+        ucm.add_script(Rc::new(UserScript::new(
+            fingerprint::page_script().to_string(),
+            None,
+        )));
+        let browser = Rc::new(Browser {
+            shield: build_shield(&options.data, options.rules.as_deref()),
+            settings: RefCell::new(Settings::load(&options.data)),
+            engines: search::catalogue(),
+            servo,
+            page_ctx,
+            scale: Cell::new(scale),
+            ucm,
+            ui: RefCell::new(None),
+            tabs: RefCell::new(Vec::new()),
+            active: Cell::new(0),
+            profile,
+            private: options.private,
+            data: options.data,
+            host,
+            fixtures: options.fixtures,
+            me: RefCell::new(Weak::new()),
+            ui_dirty: Cell::new(false),
+            deferred: RefCell::new(Vec::new()),
+            requests: RefCell::new(Vec::new()),
+        });
+        *browser.me.borrow_mut() = Rc::downgrade(&browser);
+        browser
+    }
+
+    pub fn servo(&self) -> &Servo {
+        &self.servo
+    }
+
+    fn rc(&self) -> Option<Rc<Browser>> {
+        self.me.borrow().upgrade()
+    }
+
+    /// Attach the bar, drawn in `ctx`.
+    pub fn attach_chrome(&self, ctx: Rc<dyn RenderingContext>) {
+        let Some(me) = self.rc() else { return };
+        let delegate = Rc::new(Chrome {
+            browser: Rc::downgrade(&me),
+        });
+        let view = WebViewBuilder::new(&self.servo, ctx)
+            .url(chrome_url("/index.html"))
+            .hidpi_scale_factor(Scale::new(self.scale.get()))
+            .delegate(delegate)
+            .build();
+        *self.ui.borrow_mut() = Some(view);
+    }
+
+    pub fn chrome_view(&self) -> Option<WebView> {
+        self.ui.borrow().clone()
+    }
+
+    pub fn active_view(&self) -> Option<WebView> {
+        self.tabs
+            .borrow()
+            .get(self.active.get())
+            .map(|t| t.view.clone())
+    }
+
+    pub fn tab_count(&self) -> usize {
+        self.tabs.borrow().len()
+    }
+
+    /// Open the tabs of the last session, or `start`, or a new tab.
+    pub fn open_start(&self, start: Option<Url>) {
+        if let Some(url) = start {
+            self.new_tab(url, true);
+            return;
+        }
+        if !self.private {
+            if let Ok(Some(session)) = self.profile.load_session() {
+                if let Some(w) = session.windows.first() {
+                    for t in &w.tabs {
+                        if let Ok(u) = Url::parse(&t.url) {
+                            self.new_tab(u, false);
+                        }
+                    }
+                    if self.tab_count() > 0 {
+                        self.select(w.active.min(self.tab_count() - 1));
+                        return;
+                    }
+                }
+            }
+        }
+        self.new_tab(pages::url("/newtab"), true);
+    }
+
+    /// A navigation the person started: through cleaning and HTTPS first.
+    fn prepare(&self, url: &Url) -> Url {
+        if !matches!(url.scheme(), "http" | "https") {
+            return url.clone();
+        }
+        let allowed = self.profile.site(url).is_ok_and(|s| s.http_allowed);
+        navigate(url, allowed).url
+    }
+
+    pub fn new_tab(&self, url: Url, activate: bool) {
+        let Some(me) = self.rc() else { return };
+        let url = self.prepare(&url);
+        let view = WebViewBuilder::new(&self.servo, self.page_ctx.clone())
+            .url(url)
+            .hidpi_scale_factor(Scale::new(self.scale.get()))
+            .delegate(me as Rc<dyn WebViewDelegate>)
+            .user_content_manager(self.ucm.clone())
+            .build();
+        self.add_tab(view, activate);
+    }
+
+    fn add_tab(&self, view: WebView, activate: bool) {
+        let index = {
+            let mut tabs = self.tabs.borrow_mut();
+            tabs.push(Tab {
+                view,
+                blocked: Cell::new(0),
+                upgraded_from: RefCell::new(None),
+                note: RefCell::new(None),
+                allow_once: RefCell::new(None),
+            });
+            tabs.len() - 1
+        };
+        if activate || index == 0 {
+            self.select(index);
+        } else {
+            self.tabs.borrow()[index].view.hide();
+            self.mark_ui();
+        }
+        self.save_session();
+    }
+
+    pub fn select(&self, index: usize) {
+        {
+            let tabs = self.tabs.borrow();
+            if index >= tabs.len() {
+                return;
+            }
+            for (i, t) in tabs.iter().enumerate() {
+                if i == index {
+                    t.view.show();
+                    t.view.set_focused(true);
+                } else {
+                    t.view.hide();
+                    t.view.set_focused(false);
+                }
+            }
+        }
+        self.active.set(index);
+        self.update_title();
+        self.mark_ui();
+        self.host.redraw();
+    }
+
+    pub fn close(&self, index: usize) {
+        let removed = {
+            let mut tabs = self.tabs.borrow_mut();
+            (index < tabs.len()).then(|| tabs.remove(index))
+        };
+        drop(removed);
+        let n = self.tab_count();
+        if n == 0 {
+            self.new_tab(pages::url("/newtab"), true);
+            return;
+        }
+        let active = self.active.get();
+        let next = if index < active || active >= n {
+            active.saturating_sub(1)
+        } else {
+            active
+        };
+        self.select(next.min(n - 1));
+        self.save_session();
+    }
+
+    /// What the person typed in the bar.
+    pub fn go(&self, text: &str) {
+        let chosen = self.settings.borrow().search_engine.clone();
+        let url = match omnibox::classify(text, &self.engines, chosen.as_deref()) {
+            None => return,
+            Some(Target::Url(u)) => u,
+            Some(Target::Search { engine, query }) => {
+                match search::by_id(&self.engines, &engine).and_then(|e| e.results_url(&query)) {
+                    Some(u) => u,
+                    None => return,
+                }
+            }
+            Some(Target::Internal(page)) => match page.as_str() {
+                "blank" => Url::parse("about:blank").unwrap_or_else(|_| pages::url("/newtab")),
+                p => pages::url(&format!("/{p}")),
+            },
+            Some(Target::NeedsEngine { query }) => {
+                let q: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+                pages::url(&format!("/welcome?q={q}"))
+            }
+        };
+        self.load_in_active(url);
+    }
+
+    fn load_in_active(&self, url: Url) {
+        let url = self.prepare(&url);
+        match self.active_view() {
+            Some(v) => {
+                v.load(url);
+                self.host.focus_page();
+            }
+            None => self.new_tab(url, true),
+        }
+    }
+
+    pub fn shortcut(&self, s: Shortcut) {
+        let view = self.active_view();
+        match s {
+            Shortcut::NewTab => {
+                self.new_tab(pages::url("/newtab"), true);
+                self.focus_address();
+            }
+            Shortcut::CloseTab => self.close(self.active.get()),
+            Shortcut::NextTab => {
+                let n = self.tab_count().max(1);
+                self.select((self.active.get() + 1) % n);
+            }
+            Shortcut::PreviousTab => {
+                let n = self.tab_count().max(1);
+                self.select((self.active.get() + n - 1) % n);
+            }
+            Shortcut::FocusAddress => self.focus_address(),
+            Shortcut::Back => {
+                if let Some(v) = view.filter(WebView::can_go_back) {
+                    v.go_back(1);
+                }
+            }
+            Shortcut::Forward => {
+                if let Some(v) = view.filter(WebView::can_go_forward) {
+                    v.go_forward(1);
+                }
+            }
+            Shortcut::Reload => {
+                if let Some(v) = view {
+                    v.reload();
+                }
+            }
+            Shortcut::ZoomIn | Shortcut::ZoomOut | Shortcut::ZoomReset => {
+                if let Some(v) = view {
+                    let z = match s {
+                        Shortcut::ZoomIn => (v.page_zoom() + 0.1).min(5.0),
+                        Shortcut::ZoomOut => (v.page_zoom() - 0.1).max(0.3),
+                        _ => 1.0,
+                    };
+                    v.set_page_zoom(z);
+                }
+            }
+            Shortcut::NewPrivateWindow => self.host.open_private_window(),
+        }
+    }
+
+    pub fn focus_address(&self) {
+        if let Some(ui) = self.chrome_view() {
+            ui.set_focused(true);
+            ui.evaluate_javascript("window.eonFocusAddress && eonFocusAddress()", |_| {});
+        }
+    }
+
+    fn toggle_shields(&self) {
+        let Some(view) = self.active_view() else {
+            return;
+        };
+        let Some(url) = view.url() else { return };
+        if let Ok(mut s) = self.profile.site(&url) {
+            s.shields = !s.shields;
+            let _ = self.profile.set_site(&url, &s);
+        }
+        view.reload();
+    }
+
+    fn tab_index(&self, view: &WebView) -> Option<usize> {
+        self.tabs
+            .borrow()
+            .iter()
+            .position(|t| t.view.id() == view.id())
+    }
+
+    fn with_tab<R>(&self, view: &WebView, f: impl FnOnce(&Tab) -> R) -> Option<R> {
+        let tabs = self.tabs.borrow();
+        tabs.iter().find(|t| t.view.id() == view.id()).map(f)
+    }
+
+    fn update_title(&self) {
+        let title = self
+            .active_view()
+            .and_then(|v| v.page_title())
+            .filter(|t| !t.is_empty());
+        let suffix = if self.private {
+            "EON Browser (private)"
+        } else {
+            "EON Browser"
+        };
+        match title {
+            Some(t) => self.host.set_title(&format!("{t} — {suffix}")),
+            None => self.host.set_title(suffix),
+        }
+    }
+
+    fn mark_ui(&self) {
+        self.ui_dirty.set(true);
+    }
+
+    /// Send the bar the current state, if anything changed. Called after each turn of the
+    /// event loop, so a page blocking two hundred requests updates the bar once.
+    pub fn flush_ui(&self) {
+        let deferred = std::mem::take(&mut *self.deferred.borrow_mut());
+        for (view, script) in deferred {
+            view.evaluate_javascript(script, |_| {});
+        }
+        if !self.ui_dirty.replace(false) {
+            return;
+        }
+        let Some(ui) = self.chrome_view() else { return };
+        let json = serde_json::to_string(&self.ui_state()).unwrap_or_else(|_| "null".into());
+        ui.evaluate_javascript(format!("window.eonState && eonState({json})"), |_| {});
+    }
+
+    fn ui_state(&self) -> UiState {
+        let tabs = self.tabs.borrow();
+        let active = self.active.get().min(tabs.len().saturating_sub(1));
+        let t = tabs.get(active);
+        let url = t.and_then(|t| t.view.url());
+        let own = url
+            .as_ref()
+            .is_some_and(|u| u.host_str() == Some(pages::HOST));
+        let shields = url
+            .as_ref()
+            .filter(|_| !own)
+            .and_then(|u| self.profile.site(u).ok())
+            .is_none_or(|s| s.shields);
+        UiState {
+            tabs: tabs
+                .iter()
+                .map(|t| UiTab {
+                    title: t.view.page_title().unwrap_or_default(),
+                    url: t.view.url().map(|u| display(&u)).unwrap_or_default(),
+                    loading: t.view.load_status() != LoadStatus::Complete,
+                })
+                .collect(),
+            active,
+            display: url
+                .as_ref()
+                .filter(|_| !own)
+                .map(display)
+                .unwrap_or_default(),
+            can_back: t.is_some_and(|t| t.view.can_go_back()),
+            can_forward: t.is_some_and(|t| t.view.can_go_forward()),
+            blocked: t.map_or(0, |t| t.blocked.get()),
+            shields,
+            security: match url.as_ref() {
+                Some(_) if own => "page",
+                Some(u) if u.scheme() == "https" => "secure",
+                Some(u) if u.scheme() == "http" => "open",
+                _ => "page",
+            },
+            note: t.and_then(|t| t.note.borrow().clone()),
+            private: self.private,
+        }
+    }
+
+    fn suggestions(&self, text: &str) -> Vec<UiSuggestion> {
+        let mut out = Vec::new();
+        let chosen = self.settings.borrow().search_engine.clone();
+        match omnibox::classify(text, &self.engines, chosen.as_deref()) {
+            Some(Target::Url(u)) => out.push(UiSuggestion {
+                kind: "url",
+                title: display(&u),
+                detail: "Open".into(),
+                go: text.to_string(),
+            }),
+            Some(Target::Search { engine, query }) => out.push(UiSuggestion {
+                kind: "search",
+                title: query,
+                detail: search::by_id(&self.engines, &engine)
+                    .map_or_else(String::new, |e| format!("Search with {}", e.name)),
+                go: text.to_string(),
+            }),
+            Some(Target::NeedsEngine { query }) => out.push(UiSuggestion {
+                kind: "search",
+                title: query,
+                detail: "Choose a search engine".into(),
+                go: text.to_string(),
+            }),
+            Some(Target::Internal(p)) => out.push(UiSuggestion {
+                kind: "url",
+                title: format!("eon:{p}"),
+                detail: "EON Browser page".into(),
+                go: text.to_string(),
+            }),
+            None => {}
+        }
+        if let Ok(found) = self.profile.suggest(text, 6) {
+            for s in found {
+                out.push(UiSuggestion {
+                    kind: "history",
+                    title: s.title.clone().unwrap_or_else(|| s.url.clone()),
+                    detail: s.url.clone(),
+                    go: s.url,
+                });
+            }
+        }
+        out
+    }
+
+    fn save_session(&self) {
+        if self.private {
+            return;
+        }
+        let tabs = self.tabs.borrow();
+        let session = Session {
+            windows: vec![WindowState {
+                tabs: tabs
+                    .iter()
+                    .filter_map(|t| t.view.url())
+                    .filter(|u| matches!(u.scheme(), "http" | "https"))
+                    .map(|u| SavedTab {
+                        url: u.to_string(),
+                        ..SavedTab::default()
+                    })
+                    .collect(),
+                active: self.active.get(),
+            }],
+        };
+        let _ = self.profile.save_session(&session, now());
+    }
+
+    /// Act on an own page's link (`/choose`, `/proceed`, `/allow-http`).
+    fn act(&self, view: &WebView, url: &Url) {
+        let q = |name: &str| {
+            url.query_pairs()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.into_owned())
+                .unwrap_or_default()
+        };
+        match url.path() {
+            "/choose" => {
+                let id = q("engine");
+                if search::by_id(&self.engines, &id).is_some() {
+                    self.settings.borrow_mut().search_engine = Some(id);
+                    if !self.private {
+                        let _ = self.settings.borrow().save(&self.data);
+                    }
+                }
+                let query = q("q");
+                if query.is_empty() {
+                    view.load(pages::url("/newtab"));
+                } else {
+                    self.go(&query);
+                }
+            }
+            "/proceed" => {
+                if let Ok(target) = Url::parse(&q("url")) {
+                    self.with_tab(view, |t| *t.allow_once.borrow_mut() = Some(target.clone()));
+                    view.load(target);
+                }
+            }
+            "/allow-http" => {
+                if let Ok(target) = Url::parse(&q("url")) {
+                    if let Ok(mut s) = self.profile.site(&target) {
+                        s.http_allowed = true;
+                        let _ = self.profile.set_site(&target, &s);
+                    }
+                    view.load(target);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn after_load(&self, view: &WebView) {
+        let Some(url) = view.url() else { return };
+        // HTTPS-only: an upgraded load that failed offers HTTP, for this site, by choice.
+        let upgraded = self
+            .with_tab(view, |t| t.upgraded_from.borrow_mut().take())
+            .flatten();
+        if let Some(original) = upgraded {
+            let failed = view.page_title().as_deref() == Some("Error loading page");
+            if failed && url.scheme() == "https" {
+                let q: String =
+                    url::form_urlencoded::byte_serialize(original.as_str().as_bytes()).collect();
+                view.load(pages::url(&format!("/https-failed?url={q}")));
+                return;
+            }
+        }
+        if !matches!(url.scheme(), "http" | "https") || url.host_str() == Some(pages::HOST) {
+            return;
+        }
+        if !self.private {
+            let _ = self
+                .profile
+                .visit(&url, view.page_title().as_deref(), now());
+        }
+        self.save_session();
+        // Element hiding, second step: generic rules for the classes and ids on the page.
+        let on = self.profile.site(&url).map_or(true, |s| s.shields);
+        if on {
+            let cosmetic = self.shield.cosmetic(url.as_str());
+            if !cosmetic.generichide {
+                let weak = self.me.borrow().clone();
+                let v = view.clone();
+                view.evaluate_javascript(shield::COLLECT_CLASSES_AND_IDS, move |r| {
+                    let Some(b) = weak.upgrade() else { return };
+                    let (classes, ids) = names(r);
+                    let css = b.shield.generic_css(&classes, &ids, &cosmetic);
+                    if !css.is_empty() {
+                        b.deferred.borrow_mut().push((v, inject_css(&css)));
+                    }
+                });
+            }
+        }
+    }
+
+    /// Answer an own page.
+    fn serve_page(&self, load: WebResourceLoad, url: &Url) {
+        if url.path() == "/fonts/Geist-Variable.woff2" {
+            respond(load, StatusCode::OK, "font/woff2", crate::ui::FONT.to_vec());
+            return;
+        }
+        let chosen = self.settings.borrow().search_engine.clone();
+        match pages::render(url, &self.engines, chosen.as_deref(), VERSION) {
+            Some(html) => respond(
+                load,
+                StatusCode::OK,
+                "text/html; charset=utf-8",
+                html.into_bytes(),
+            ),
+            None => respond(
+                load,
+                StatusCode::NOT_FOUND,
+                "text/plain",
+                b"Not found".to_vec(),
+            ),
+        }
+    }
+
+    fn command(&self, c: &serde_json::Value) -> serde_json::Value {
+        let op = c
+            .get("op")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let tab = c
+            .get("tab")
+            .and_then(serde_json::Value::as_u64)
+            .map(|t| t as usize);
+        let text = c
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        match op {
+            "ready" => return serde_json::to_value(self.ui_state()).unwrap_or_default(),
+            "go" => self.go(text),
+            "back" => self.shortcut(Shortcut::Back),
+            "forward" => self.shortcut(Shortcut::Forward),
+            "reload" => self.shortcut(Shortcut::Reload),
+            "newTab" => self.shortcut(Shortcut::NewTab),
+            "close" => self.close(tab.unwrap_or(self.active.get())),
+            "select" => {
+                if let Some(t) = tab {
+                    self.select(t);
+                }
+            }
+            "shields" => self.toggle_shields(),
+            "suggest" => {
+                return serde_json::json!({ "items": self.suggestions(text) });
+            }
+            "height" => {
+                let px = c
+                    .get("px")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(84);
+                self.host.chrome_height(px.clamp(84, 600) as u32);
+            }
+            "focusPage" => self.host.focus_page(),
+            _ => return serde_json::json!({ "ok": false }),
+        }
+        self.mark_ui();
+        serde_json::json!({ "ok": true })
+    }
+}
+
+/// `{classes: [...], ids: [...]}` from the page.
+fn names(r: Result<JSValue, servo::JavaScriptEvaluationError>) -> (Vec<String>, Vec<String>) {
+    let strings = |v: Option<&JSValue>| -> Vec<String> {
+        match v {
+            Some(JSValue::Array(items)) => items
+                .iter()
+                .filter_map(|i| match i {
+                    JSValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    match r {
+        Ok(JSValue::Object(map)) => (strings(map.get("classes")), strings(map.get("ids"))),
+        _ => (Vec::new(), Vec::new()),
+    }
+}
+
+/// An address as the bar shows it: without `https://`, and without a lone trailing `/`.
+pub fn display(u: &Url) -> String {
+    let s = u.as_str();
+    let s = s.strip_prefix("https://").unwrap_or(s);
+    match s.strip_suffix('/') {
+        Some(t) if u.path() == "/" && u.query().is_none() => t.to_string(),
+        _ => s.to_string(),
+    }
+}
+
+fn chrome_url(path: &str) -> Url {
+    Url::parse(&format!("https://{UI_HOST}{path}")).unwrap_or_else(|_| pages::url("/newtab"))
+}
+
+#[derive(Serialize)]
+struct UiTab {
+    title: String,
+    url: String,
+    loading: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // what the bar shows, field by field
+struct UiState {
+    tabs: Vec<UiTab>,
+    active: usize,
+    display: String,
+    can_back: bool,
+    can_forward: bool,
+    blocked: u32,
+    shields: bool,
+    security: &'static str,
+    note: Option<String>,
+    private: bool,
+}
+
+#[derive(Serialize)]
+struct UiSuggestion {
+    kind: &'static str,
+    title: String,
+    detail: String,
+    go: String,
+}
+
+impl WebViewDelegate for Browser {
+    fn notify_new_frame_ready(&self, view: WebView) {
+        if self.active_view().is_some_and(|a| a.id() == view.id()) {
+            self.host.redraw();
+        }
+    }
+
+    fn notify_url_changed(&self, _view: WebView, _url: Url) {
+        self.mark_ui();
+    }
+
+    fn notify_page_title_changed(&self, view: WebView, title: Option<String>) {
+        if let (Some(url), Some(t), false) = (view.url(), title, self.private) {
+            let _ = self.profile.set_title(&url, &t);
+        }
+        if self.active_view().is_some_and(|a| a.id() == view.id()) {
+            self.update_title();
+        }
+        self.mark_ui();
+    }
+
+    fn notify_load_status_changed(&self, view: WebView, status: LoadStatus) {
+        match status {
+            LoadStatus::Started => {
+                self.with_tab(&view, |t| t.blocked.set(0));
+            }
+            LoadStatus::HeadParsed => {
+                // Element hiding, first step: the rules written for this site, as early as
+                // the page has a head to put them in.
+                if let Some(url) = view.url() {
+                    let on = self.profile.site(&url).map_or(true, |s| s.shields);
+                    if on && matches!(url.scheme(), "http" | "https") {
+                        let css = self.shield.cosmetic(url.as_str()).css;
+                        if !css.is_empty() {
+                            view.evaluate_javascript(inject_css(&css), |_| {});
+                        }
+                    }
+                }
+            }
+            LoadStatus::Complete => self.after_load(&view),
+            LoadStatus::Stopped => {}
+        }
+        self.mark_ui();
+    }
+
+    fn notify_history_changed(&self, _view: WebView, _entries: Vec<Url>, _current: usize) {
+        self.mark_ui();
+    }
+
+    fn notify_cursor_changed(&self, view: WebView, cursor: Cursor) {
+        if self.active_view().is_some_and(|a| a.id() == view.id()) {
+            self.host.set_cursor(cursor);
+        }
+    }
+
+    fn notify_closed(&self, view: WebView) {
+        if let Some(i) = self.tab_index(&view) {
+            self.close(i);
+        }
+    }
+
+    fn notify_crashed(&self, view: WebView, reason: String, _backtrace: Option<String>) {
+        self.with_tab(&view, |t| {
+            *t.note.borrow_mut() = Some(format!("This page crashed: {reason}"));
+        });
+        self.mark_ui();
+    }
+
+    fn request_navigation(&self, view: WebView, request: NavigationRequest) {
+        let url = request.url.clone();
+        match url.host_str() {
+            Some(UI_HOST) => {
+                request.deny();
+                return;
+            }
+            Some(pages::HOST) => {
+                if pages::is_action(url.path()) {
+                    let from_own = view
+                        .url()
+                        .is_some_and(|u| u.host_str() == Some(pages::HOST));
+                    request.deny();
+                    if from_own {
+                        self.act(&view, &url);
+                    }
+                } else {
+                    request.allow();
+                }
+                return;
+            }
+            _ => {}
+        }
+        if !matches!(url.scheme(), "http" | "https") {
+            request.allow();
+            return;
+        }
+        let settings = self.profile.site(&url).unwrap_or_default();
+        let nav = navigate(&url, settings.http_allowed);
+        if nav.changed {
+            let note = nav.cleaned.as_ref().and_then(|c| {
+                let n = c.removed.len();
+                match (n, &c.unwrapped_from) {
+                    (0, Some(_)) => Some("Redirect skipped".to_string()),
+                    (0, None) => None,
+                    (1, _) => Some("1 tracker removed from the link".to_string()),
+                    (n, _) => Some(format!("{n} trackers removed from the link")),
+                }
+            });
+            let upgraded_from = match nav.upgrade {
+                Upgrade::Upgraded(_) => {
+                    Some(nav.cleaned.as_ref().map_or(url.clone(), |c| c.url.clone()))
+                }
+                _ => None,
+            };
+            self.with_tab(&view, |t| {
+                *t.note.borrow_mut() = note;
+                *t.upgraded_from.borrow_mut() = upgraded_from;
+            });
+            request.deny();
+            view.load(nav.url);
+            self.mark_ui();
+            return;
+        }
+        // A whole site named harmful by a list: warn, with a way through.
+        let passed = self
+            .with_tab(&view, |t| t.allow_once.borrow_mut().take())
+            .flatten()
+            .is_some_and(|u| u == url);
+        if settings.shields && !passed {
+            if let Verdict::Block { .. } = self.shield.check_document(url.as_str()) {
+                let q: String =
+                    url::form_urlencoded::byte_serialize(url.as_str().as_bytes()).collect();
+                request.deny();
+                view.load(pages::url(&format!("/blocked?url={q}")));
+                return;
+            }
+        }
+        self.with_tab(&view, |t| {
+            if t.upgraded_from
+                .borrow()
+                .as_ref()
+                .is_some_and(|u| u.host_str() != url.host_str())
+            {
+                *t.upgraded_from.borrow_mut() = None;
+            }
+        });
+        request.allow();
+    }
+
+    fn request_create_new(&self, _parent: WebView, request: CreateNewWebViewRequest) {
+        let Some(me) = self.rc() else { return };
+        let view = request
+            .builder(self.page_ctx.clone())
+            .hidpi_scale_factor(Scale::new(self.scale.get()))
+            .delegate(me as Rc<dyn WebViewDelegate>)
+            .user_content_manager(self.ucm.clone())
+            .build();
+        self.add_tab(view, true);
+    }
+
+    fn request_permission(&self, _view: WebView, request: PermissionRequest) {
+        // v0.0.0 asks nothing and grants nothing: camera, microphone, location and
+        // notifications are refused until the permission prompt exists (plan v0.0.2).
+        request.deny();
+    }
+
+    fn load_web_resource(&self, view: WebView, load: WebResourceLoad) {
+        let req = load.request();
+        let url = req.url.clone().into_url();
+        match url.host_str() {
+            Some(UI_HOST) => return refuse(load),
+            Some(pages::HOST) => return self.serve_page(load, &url),
+            _ => {}
+        }
+        let main_frame = req.is_for_main_frame;
+        let dest = format!("{:?}", req.destination).to_ascii_lowercase();
+        let page = if main_frame {
+            Some(url.clone())
+        } else {
+            view.url()
+        };
+        let page = page.unwrap_or_else(|| url.clone());
+        let on = self.profile.site(&page).map_or(true, |s| s.shields)
+            && page.host_str() != Some(pages::HOST);
+        if on && !main_frame {
+            let kind = Kind::from_destination(if dest == "none" { "empty" } else { &dest });
+            let verdict = self.shield.check(&Request {
+                url: url.as_str(),
+                source: page.as_str(),
+                kind,
+            });
+            if verdict != Verdict::Allow {
+                self.with_tab(&view, |t| t.blocked.set(t.blocked.get() + 1));
+                self.mark_ui();
+                return refuse(load);
+            }
+        }
+        if matches!(url.scheme(), "http" | "https") {
+            self.requests.borrow_mut().push(url.to_string());
+        }
+        if let Some(fixtures) = &self.fixtures {
+            match fixtures.get(&url) {
+                Some((mime, body)) => respond(load, StatusCode::OK, mime, body.clone()),
+                None => respond(
+                    load,
+                    StatusCode::NOT_FOUND,
+                    "text/plain",
+                    b"no fixture".to_vec(),
+                ),
+            }
+        }
+        // Otherwise `load` is dropped, and the request goes to the network as it is.
+    }
+}
+
+/// The bar's delegate: it may load only its own files, and its requests to `/cmd` are
+/// the commands it gives the browser.
+struct Chrome {
+    browser: Weak<Browser>,
+}
+
+impl WebViewDelegate for Chrome {
+    fn notify_new_frame_ready(&self, _view: WebView) {
+        if let Some(b) = self.browser.upgrade() {
+            b.host.redraw();
+        }
+    }
+
+    fn notify_cursor_changed(&self, _view: WebView, cursor: Cursor) {
+        if let Some(b) = self.browser.upgrade() {
+            b.host.set_cursor(cursor);
+        }
+    }
+
+    fn request_navigation(&self, _view: WebView, request: NavigationRequest) {
+        if request.url.host_str() == Some(UI_HOST) {
+            request.allow();
+        } else {
+            request.deny();
+        }
+    }
+
+    fn load_web_resource(&self, _view: WebView, load: WebResourceLoad) {
+        let url = load.request().url.clone().into_url();
+        if url.host_str() != Some(UI_HOST) {
+            return refuse(load);
+        }
+        if url.path() == "/cmd" {
+            let Some(b) = self.browser.upgrade() else {
+                return refuse(load);
+            };
+            let c = url
+                .query_pairs()
+                .find(|(k, _)| k == "c")
+                .and_then(|(_, v)| serde_json::from_str::<serde_json::Value>(&v).ok())
+                .unwrap_or_default();
+            let reply = b.command(&c);
+            let body = serde_json::to_vec(&reply).unwrap_or_default();
+            return respond(load, StatusCode::OK, "application/json", body);
+        }
+        match crate::ui::asset(url.path()) {
+            Some((mime, body)) => respond(load, StatusCode::OK, mime, body.to_vec()),
+            None => respond(
+                load,
+                StatusCode::NOT_FOUND,
+                "text/plain",
+                b"Not found".to_vec(),
+            ),
+        }
+    }
+}

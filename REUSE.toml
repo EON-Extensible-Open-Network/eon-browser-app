@@ -1,0 +1,17 @@
+version = 1
+SPDX-PackageName = "eon-browser-app"
+SPDX-PackageSupplier = "EON contributors"
+SPDX-PackageDownloadLocation = "https://github.com/EON-Extensible-Open-Network/eon-browser-app"
+
+[[annotations]]
+path = ["**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 EON contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# Geist, by Vercel and basement.studio, under the SIL Open Font License.
+[[annotations]]
+path = ["src/ui/fonts/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "2023 Vercel, in collaboration with basement.studio"
+SPDX-License-Identifier = "OFL-1.1"

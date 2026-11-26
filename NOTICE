@@ -1,0 +1,19 @@
+EON Browser
+Copyright (c) 2026 EON contributors
+
+This product is licensed under GPL-3.0-or-later WITH the EON Module ABI
+Exception 1.0 (see LICENSE and LICENSE-EXCEPTION.md).
+
+Third-party components (direct dependencies; full inventory: cargo deny check licenses)
+
+  servo                    MPL-2.0 (the Servo project; combined as a Larger Work)
+  eon-browser-core         GPL-3.0-or-later (with adblock, MPL-2.0, by Brave Software)
+  winit                    Apache-2.0
+  euclid, dpi, url, http   MIT OR Apache-2.0
+  rustls (aws-lc-rs)       Apache-2.0 OR ISC OR MIT
+  serde, serde_json        MIT OR Apache-2.0
+  Geist (font)             OFL-1.1 (Vercel, with basement.studio)
+
+Releases carry filter lists from their publishers: EasyList and EasyPrivacy
+(GPL-3.0-or-later or CC BY-SA 3.0), uBlock Origin's uAssets (GPL-3.0), EasyList
+Cookie List (CC BY 3.0).
