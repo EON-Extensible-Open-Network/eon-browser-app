@@ -32,11 +32,18 @@ until you open a page. Windows, Linux and macOS. **Early alpha.**
   address; it does not make you as hard to recognise as Tor Browser does, and the route
   page says so.
 
+- **Extensions from Chrome, Edge, Opera and Firefox**, stage 1:
+  `eon-browser --install-extension <file.crx | file.xpi | folder>` shows what the extension
+  may do and installs it; its blocking rules (`declarativeNetRequest`) run in the shield,
+  its content scripts and styles run in pages. The real uBlock Origin Lite runs 117,636 of
+  its rules. Settings pages, pop-ups and background work come next
+  ([the stages](https://github.com/EON-Extensible-Open-Network/eon-docs/blob/main/browser/extensions.md)).
+
 ## What it does not do yet
 
 **Not sandboxed on Windows** (Servo does not yet isolate pages the way Chrome and Firefox
 do) — not for banking yet. **No video or audio** yet, **no DRM** ever. Some sites
-break. No bookmarks bar, downloads, permission prompts, extensions or sync yet. The roadmap
+break. No bookmarks bar, downloads, permission prompts or sync yet; extensions are at their first stage. The roadmap
 is [`eon-docs/browser/plan.md`](https://github.com/EON-Extensible-Open-Network/eon-docs/blob/main/browser/plan.md).
 
 ## How it is built
@@ -62,7 +69,7 @@ Arti and Servo cannot share one feature-unified build (see `route/Cargo.toml`).
 
 ## Checks
 
-`cargo test`, and `--selftest`: 30 checks through the real engine against pages the
+`cargo test`, and `--selftest`: 37 checks through the real engine against pages the
 browser serves itself — blocking, element hiding, link cleaning, HTTPS-only, the user agent,
 GPC, keyboard (Turkish letters) and wheel input, the bar, the own pages, and that a site
 can neither reach the bar's bridge nor choose your search engine. Emptying the rules makes

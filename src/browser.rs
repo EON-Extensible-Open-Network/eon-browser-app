@@ -100,7 +100,8 @@ pub struct Browser {
     tabs: RefCell<Vec<Tab>>,
     active: Cell<usize>,
     profile: Profile,
-    shield: Shield,
+    shield: RefCell<Shield>,
+    extensions: RefCell<crate::extensions::Extensions>,
     settings: RefCell<Settings>,
     engines: Vec<SearchEngine>,
     private: bool,
@@ -110,6 +111,7 @@ pub struct Browser {
     me: RefCell<Weak<Browser>>,
     ui_dirty: Cell<bool>,
     route: Option<std::sync::Arc<crate::route_client::RouteClient>>,
+    rules_override: Option<String>,
     /// Scripts to run in a page on the next turn: Servo cannot start an evaluation from
     /// inside another one's callback.
     deferred: RefCell<Vec<(WebView, String)>>,
@@ -124,7 +126,7 @@ fn now() -> u64 {
 }
 
 /// A JavaScript statement that adds `css` to the page as a stylesheet.
-fn inject_css(css: &str) -> String {
+pub fn inject_css(css: &str) -> String {
     let lit = serde_json::to_string(css).unwrap_or_else(|_| "\"\"".into());
     format!(
         "(()=>{{const s=document.createElement('style');s.dataset.eon='shield';s.textContent={lit};\
@@ -158,10 +160,18 @@ pub fn refuse(load: WebResourceLoad) {
     load.intercept(WebResourceResponse::new(url)).cancel();
 }
 
-/// The data-URL seeding and the compiled lists.
+/// The lists (seeded from the release), the extensions' rules, compiled.
 fn build_shield(data: &std::path::Path, rules: Option<&str>) -> Shield {
     if let Some(r) = rules {
-        return Shield::from_rules(r);
+        // The self-test's own rules, with whatever its extensions added.
+        let mut all = r.to_string();
+        if let Ok(l) = Lists::load(&data.join("lists")) {
+            for (_, text) in l.extension_rules().unwrap_or_default() {
+                all.push('\n');
+                all.push_str(&text);
+            }
+        }
+        return Shield::from_rules(&all);
     }
     let lists = Lists::load(&data.join("lists")).map(|mut l| {
         for (id, text) in crate::seed::SEED {
@@ -209,7 +219,9 @@ impl Browser {
             None,
         )));
         let browser = Rc::new(Browser {
-            shield: build_shield(&options.data, options.rules.as_deref()),
+            shield: RefCell::new(build_shield(&options.data, options.rules.as_deref())),
+            extensions: RefCell::new(crate::extensions::Extensions::load(&options.data)),
+            rules_override: options.rules.clone(),
             settings: RefCell::new(Settings::load(&options.data)),
             engines: search::catalogue(),
             servo,
@@ -747,6 +759,24 @@ impl Browser {
                 }
                 view.load(pages::url("/route"));
             }
+            "/ext-toggle" | "/ext-remove" => {
+                let id = q("id");
+                let result = Lists::load(&self.data.join("lists"))
+                    .map_err(|e| e.to_string())
+                    .and_then(|mut l| {
+                        let mut ext = self.extensions.borrow_mut();
+                        if url.path() == "/ext-remove" {
+                            ext.remove(&id, &mut l)
+                        } else {
+                            let on = !ext.list.iter().any(|i| i.id == id && i.enabled);
+                            ext.set_enabled(&id, on, &mut l)
+                        }
+                    });
+                if result.is_ok() {
+                    self.rebuild_shield();
+                }
+                view.load(pages::url("/extensions"));
+            }
             "/new-identity" => {
                 self.new_identity();
                 view.load(pages::url("/route"));
@@ -764,8 +794,25 @@ impl Browser {
         }
     }
 
+    /// Recompile the shield after the lists or an extension's rules changed.
+    fn rebuild_shield(&self) {
+        let shield = build_shield(&self.data, self.rules_override.as_deref());
+        *self.shield.borrow_mut() = shield;
+    }
+
+    /// Run the enabled extensions' content scripts and styles for `url` at `stage`.
+    fn run_extensions(&self, view: &WebView, url: &Url, stage: crate::extensions::Stage) {
+        if !matches!(url.scheme(), "http" | "https") || url.host_str() == Some(pages::HOST) {
+            return;
+        }
+        for script in self.extensions.borrow().scripts_for(url, stage) {
+            view.evaluate_javascript(script, |_| {});
+        }
+    }
+
     fn after_load(&self, view: &WebView) {
         let Some(url) = view.url() else { return };
+        self.run_extensions(view, &url, crate::extensions::Stage::End);
         // HTTPS-only: an upgraded load that failed offers HTTP, for this site, by choice.
         let upgraded = self
             .with_tab(view, |t| t.upgraded_from.borrow_mut().take())
@@ -791,14 +838,14 @@ impl Browser {
         // Element hiding, second step: generic rules for the classes and ids on the page.
         let on = self.profile.site(&url).map_or(true, |s| s.shields);
         if on {
-            let cosmetic = self.shield.cosmetic(url.as_str());
+            let cosmetic = self.shield.borrow().cosmetic(url.as_str());
             if !cosmetic.generichide {
                 let weak = self.me.borrow().clone();
                 let v = view.clone();
                 view.evaluate_javascript(shield::COLLECT_CLASSES_AND_IDS, move |r| {
                     let Some(b) = weak.upgrade() else { return };
                     let (classes, ids) = names(r);
-                    let css = b.shield.generic_css(&classes, &ids, &cosmetic);
+                    let css = b.shield.borrow().generic_css(&classes, &ids, &cosmetic);
                     if !css.is_empty() {
                         b.deferred.borrow_mut().push((v, inject_css(&css)));
                     }
@@ -811,6 +858,16 @@ impl Browser {
     fn serve_page(&self, load: WebResourceLoad, url: &Url) {
         if url.path() == "/fonts/Geist-Variable.woff2" {
             respond(load, StatusCode::OK, "font/woff2", crate::ui::FONT.to_vec());
+            return;
+        }
+        if url.path() == "/extensions" {
+            let html = pages::extensions(&self.extensions.borrow().list);
+            respond(
+                load,
+                StatusCode::OK,
+                "text/html; charset=utf-8",
+                html.into_bytes(),
+            );
             return;
         }
         if url.path() == "/route" {
@@ -988,11 +1045,12 @@ impl WebViewDelegate for Browser {
                 if let Some(url) = view.url() {
                     let on = self.profile.site(&url).map_or(true, |s| s.shields);
                     if on && matches!(url.scheme(), "http" | "https") {
-                        let css = self.shield.cosmetic(url.as_str()).css;
+                        let css = self.shield.borrow().cosmetic(url.as_str()).css;
                         if !css.is_empty() {
                             view.evaluate_javascript(inject_css(&css), |_| {});
                         }
                     }
+                    self.run_extensions(&view, &url, crate::extensions::Stage::Start);
                 }
             }
             LoadStatus::Complete => self.after_load(&view),
@@ -1084,7 +1142,8 @@ impl WebViewDelegate for Browser {
             .flatten()
             .is_some_and(|u| u == url);
         if settings.shields && !passed {
-            if let Verdict::Block { .. } = self.shield.check_document(url.as_str()) {
+            let verdict = self.shield.borrow().check_document(url.as_str());
+            if let Verdict::Block { .. } = verdict {
                 let q: String =
                     url::form_urlencoded::byte_serialize(url.as_str().as_bytes()).collect();
                 request.deny();
@@ -1131,6 +1190,12 @@ impl WebViewDelegate for Browser {
         match url.host_str() {
             Some(UI_HOST) => return refuse(load),
             Some(pages::HOST) => return self.serve_page(load, &url),
+            Some(crate::extensions::HOST) => {
+                return match self.extensions.borrow().serve(&url) {
+                    Some((mime, body)) => respond(load, StatusCode::OK, mime, body),
+                    None => respond(load, StatusCode::NOT_FOUND, "text/plain", Vec::new()),
+                };
+            }
             _ => {}
         }
         let dest = format!("{:?}", req.destination).to_ascii_lowercase();
@@ -1143,12 +1208,16 @@ impl WebViewDelegate for Browser {
             && page.host_str() != Some(pages::HOST);
         if on && !main_frame {
             let kind = Kind::from_destination(if dest == "none" { "empty" } else { &dest });
-            let verdict = self.shield.check(&Request {
+            let verdict = self.shield.borrow().check(&Request {
                 url: url.as_str(),
                 source: page.as_str(),
                 kind,
             });
             if verdict != Verdict::Allow {
+                // For finding what a site needs that a list blocks; never on by default.
+                if std::env::var_os("EON_BROWSER_LOG_BLOCKS").is_some() {
+                    eprintln!("blocked {kind:?} {url} (page {page}) {verdict:?}");
+                }
                 self.with_tab(&view, |t| t.blocked.set(t.blocked.get() + 1));
                 self.mark_ui();
                 return refuse(load);

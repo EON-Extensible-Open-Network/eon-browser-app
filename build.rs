@@ -21,6 +21,7 @@ fn main() {
             .map(|d| d.flatten().map(|e| e.path()).collect())
             .unwrap_or_default();
         files.sort();
+        let mut count = 0;
         for p in files {
             if p.extension().and_then(|e| e.to_str()) != Some("txt") {
                 continue;
@@ -33,6 +34,12 @@ fn main() {
                 "    ({id:?}, include_bytes!({:?})),",
                 p.display().to_string()
             );
+            count += 1;
+        }
+        // A release asked for lists and got none: stop, rather than ship a browser that
+        // blocks nothing (v0.0.0's Windows build did, from a POSIX path it could not read).
+        if count == 0 {
+            println!("cargo::error=EON_BROWSER_SEED_DIR={dir} holds no <list id>.txt files");
         }
         at = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -47,7 +47,11 @@ jobs:
           get ubo-unbreak      https://ublockorigin.github.io/uAssets/filters/unbreak.txt
           get easylist-cookie  https://secure.fanboy.co.nz/fanboy-cookiemonster.txt
           ls -la seed
-          echo "EON_BROWSER_SEED_DIR=$PWD/seed" >> "$GITHUB_ENV"
+          # A Windows path on Windows: the build script is a Windows program and cannot read
+          # the POSIX path bash gives (v0.0.0's Windows build shipped without lists for it).
+          seed="$PWD/seed"
+          if [ "$RUNNER_OS" = "Windows" ]; then seed="$(cygpath -w "$seed")"; fi
+          echo "EON_BROWSER_SEED_DIR=$seed" >> "$GITHUB_ENV"
       - run: rustup show
       # Two programs, two cargo invocations (route/Cargo.toml says why).
       - run: cargo build --release --locked -p eon-browser

@@ -14,6 +14,7 @@
 
 mod browser;
 mod engine;
+mod extensions;
 mod input;
 mod pages;
 mod paths;
@@ -28,6 +29,46 @@ mod seed {
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+/// `--install-extension <file or folder>`: install into the data folder, say what it may
+/// do, and exit. The window picks it up at its next start.
+fn install_extension(from: Option<PathBuf>) -> ExitCode {
+    let Some(from) = from else {
+        eprintln!("eon-browser: --install-extension needs a .crx, .xpi, .zip or a folder");
+        return ExitCode::from(2);
+    };
+    let data = paths::data_dir();
+    let mut lists = match eon_browser_core::lists::Lists::load(&data.join("lists")) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("eon-browser: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut exts = extensions::Extensions::load(&data);
+    match exts.install(&from, &mut lists) {
+        Ok(e) => {
+            println!(
+                "Installed {} {} ({}).",
+                e.manifest.name, e.manifest.version, e.source
+            );
+            for p in &e.permissions {
+                println!("  - {p}");
+            }
+            if e.rules > 0 {
+                println!(
+                    "  {} blocking rules run in the shield ({} not translated).",
+                    e.rules, e.rules_skipped
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("eon-browser: could not install: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
 
 fn main() -> ExitCode {
     engine::install_crypto();
@@ -53,6 +94,9 @@ fn main() -> ExitCode {
                         ExitCode::from(2)
                     }
                 };
+            }
+            "--install-extension" => {
+                return install_extension(args.get(i + 1).map(PathBuf::from));
             }
             "--private" => private = true,
             other if !other.starts_with("--") => start = url::Url::parse(other).ok(),

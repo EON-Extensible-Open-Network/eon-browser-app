@@ -22,6 +22,22 @@ which sends it directly, **through Tor**, or through **a proxy server the person
   check.torproject.org in EON Browser: "Congratulations. This browser is configured to
   use Tor."; the same site keeps its exit, another site gets another, New identity
   changes it.
+- The self-test grows to 37 checks: the route (4), extensions (6), and that a release
+  carries its lists.
+
+**Other browsers' extensions, stage 1** (plan madde 50h): `--install-extension` takes a
+Chrome CRX3, a Firefox XPI, a zip or an unpacked folder, says in sentences what the
+extension may do, and installs it; `eon:extensions` turns it on, off or removes it. Its
+`declarativeNetRequest` rules run in the shield; its content scripts and styles run in
+matching pages with `chrome.runtime` and `chrome.i18n`; only its web-accessible files are
+served, so sites cannot probe for it. Tried with the real **uBlock Origin Lite** from the
+Chrome Web Store: 117,636 rules run, 1,147 not translated yet (redirects, header changes,
+conditions not handled), and BBC News shows 21 trackers blocked by its rules alone.
+Storage, messaging, background pages and pop-ups are stage 2.
+
+**Fixed: the v0.0.0 Windows file carried no blocking lists** — the release script gave the
+build a POSIX path it could not read. The build now stops when lists were asked for and
+none were found, and the self-test checks a release carries them.
 
 Found while building: **Arti and Servo cannot share one build** — Arti turns on
 `derive_more`'s "full" feature, whose `PartialEq`/`Eq` derives shadow std's inside

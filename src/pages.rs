@@ -24,7 +24,13 @@ pub fn url(path_and_query: &str) -> Url {
 pub fn is_action(path: &str) -> bool {
     matches!(
         path,
-        "/choose" | "/proceed" | "/allow-http" | "/set-route" | "/new-identity"
+        "/choose"
+            | "/proceed"
+            | "/allow-http"
+            | "/set-route"
+            | "/new-identity"
+            | "/ext-toggle"
+            | "/ext-remove"
     )
 }
 
@@ -266,6 +272,61 @@ pub fn route(status: Option<&crate::route_client::Status>) -> String {
             ),
             if s.kind == "proxy" { " — on" } else { "" },
             escape(&s.address)
+        ),
+    )
+}
+
+/// The extensions page (madde 50h, stage 1).
+pub fn extensions(list: &[crate::extensions::Installed]) -> String {
+    let mut rows = String::new();
+    for e in list {
+        let perms = e.permissions.iter().fold(String::new(), |mut out, p| {
+            let _ = write!(out, "<li>{}</li>", escape(p));
+            out
+        });
+        let rules = if e.rules > 0 {
+            format!(
+                "<p>{} blocking rules run in the shield{}.</p>",
+                e.rules,
+                if e.rules_skipped > 0 {
+                    format!("; {} could not be translated yet", e.rules_skipped)
+                } else {
+                    String::new()
+                }
+            )
+        } else {
+            String::new()
+        };
+        let _ = write!(
+            rows,
+            "<div class=\"card\" style=\"margin:12px 0\"><b>{} <span>{} · {}</span></b>\
+             <span>{}</span><ul class=\"facts\">{perms}</ul>{rules}\
+             <div class=\"actions\"><a class=\"btn{}\" href=\"/ext-toggle?id={}\">{}</a>\
+             <a class=\"btn quiet\" href=\"/ext-remove?id={}\">Remove</a></div></div>",
+            escape(&e.manifest.name),
+            escape(&e.manifest.version),
+            escape(&e.source),
+            escape(&e.manifest.description),
+            if e.enabled { " quiet" } else { "" },
+            enc(&e.id),
+            if e.enabled { "Turn off" } else { "Turn on" },
+            enc(&e.id),
+        );
+    }
+    if rows.is_empty() {
+        rows = "<p>No extensions yet.</p>".into();
+    }
+    page(
+        "Extensions",
+        &format!(
+            "{MARK}<h1>Extensions</h1><p>Extensions made for Chrome, Edge, Opera and Firefox, \
+             running on EON Browser's own core. This is the first stage: their blocking rules \
+             and the scripts and styles they add to pages. Settings pages, pop-ups and \
+             background work come next.</p>{rows}\
+             <ul class=\"facts\"><li><b>Install:</b> download the extension's file (<code>.crx</code> \
+             from a Chrome store, <code>.xpi</code> from Firefox's), then run \
+             <code>eon-browser --install-extension &lt;file&gt;</code>. What it may do is listed \
+             here; an extension that can read every site can read every site.</li></ul>"
         ),
     )
 }

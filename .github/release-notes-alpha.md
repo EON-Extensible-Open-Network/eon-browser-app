@@ -14,12 +14,17 @@ not a system webview. This is an **early alpha** (plan madde 50).
   server. Tor hides your address from sites; it does not make you as hard to recognise as
   Tor Browser does.
 
+- **Extensions from other browsers** (from v0.0.1, first stage): install a Chrome `.crx`,
+  a Firefox `.xpi` or a folder with `eon-browser --install-extension <file>`; it shows what
+  the extension may do first. Blocking rules and page scripts and styles run; settings
+  pages, pop-ups and background work come next.
+
 **What it does not do yet — read before using it**
 - **Not sandboxed on Windows.** Servo does not yet isolate pages from each other or from your
   computer the way Chrome and Firefox do. Do not use it for banking or anything sensitive yet.
 - **No video or audio** yet (planned next, with WebGL). **No DRM**, ever: Netflix and similar will not play.
 - Some sites render wrongly or not at all; Servo is younger than the big engines.
-- No bookmarks bar, downloads, permission prompts, extensions or sync yet.
+- No bookmarks bar, downloads, permission prompts or sync yet.
 
 **Run it:** download the archive for your system, check it against `SHA256SUMS.txt`, and
 keep `eon-browser` and `eon-browser-route` in the same folder.

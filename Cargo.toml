@@ -16,7 +16,7 @@ publish = false
 [dependencies]
 # The policy: blocking, link cleaning, HTTPS-only, address bar, profile, user agent.
 # Pinned by commit and version (a bare git dependency is a wildcard to cargo-deny).
-eon-browser-core = { git = "https://github.com/EON-Extensible-Open-Network/eon-browser-core", rev = "2cfb9fd6d21423e1a84b453987f118a3ea26f22c", version = "0.0.0-alpha" }
+eon-browser-core = { git = "https://github.com/EON-Extensible-Open-Network/eon-browser-core", rev = "3303fcd6ba6b41d27274b856da4e8a1b728c8a65", version = "0.0.0-alpha" }
 # The engine (madde 50a). Pinned exactly: its API breaks every month.
 # Default features minus devtools (no debugging server can be opened), plus what sites
 # need that the defaults leave out: Web Crypto (sign-in pages) and Brotli streams.

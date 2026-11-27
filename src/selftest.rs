@@ -70,6 +70,10 @@ const SITE: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Se
 <img id="ok" src="https://site.example/logo.png" width="40" height="40">
 <div class="ad-slot">AD SLOT</div>
 <div class="cookie-banner">We value your privacy</div>
+<div class="ext-hide">hidden by an extension's style</div>
+<img id="exttrk" src="https://ext-tracker.example/p.png" width="10" height="10">
+<img id="extwar" src="https://ext.eon.invalid/eon-self-test-extension/img/open.png" width="10" height="10">
+<img id="extpriv" src="https://ext.eon.invalid/eon-self-test-extension/private.png" width="10" height="10">
 <p><input id="box"></p>
 <p><a id="out" href="http://site.example/read?fbclid=abc&amp;keep=1">read</a>
 <a id="evil" href="https://evil.example/">evil</a>
@@ -265,6 +269,11 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
         "ads.tracker.example/banner.png".into(),
         ("image/png", PNG.to_vec()),
     );
+    fixtures.0.insert(
+        "ext-tracker.example/p.png".into(),
+        ("image/png", PNG.to_vec()),
+    );
+    let extension = install_test_extension(&data);
     let headless = Headless::default();
     let redraw = headless.redraw.clone();
     let browser = Browser::new(
@@ -302,6 +311,13 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
         Duration::from_secs(30),
     );
     r.check("a new tab opens on first start", started, &run.url());
+    // A release build must carry the day's lists (v0.0.0's Windows build did not).
+    let seeded = crate::seed::SEED.len();
+    r.check(
+        "a release carries the blocking lists inside it",
+        cfg!(debug_assertions) || seeded >= 7,
+        &format!("{seeded} lists"),
+    );
     run.settle(500);
     let tabs = s(run.ui_eval("document.querySelectorAll('.tab').length"));
     r.check("the bar shows the tab", tabs == "1", &tabs);
@@ -337,6 +353,7 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
     r.check("an ad image is blocked", ad == "0", &ad);
     let logo = s(run.page_eval("String(document.getElementById('ok').naturalWidth)"));
     r.check("the site's own image loads", logo == "1", &logo);
+    extension_checks(&run, extension.as_deref(), &mut r);
     let slot = s(run.page_eval("getComputedStyle(document.querySelector('.ad-slot')).display"));
     r.check(
         "a site-specific hiding rule hides its element",
@@ -607,5 +624,87 @@ fn route_checks(route: Option<&crate::route_client::RouteClient>, r: &mut Report
         "the browser's connections go through its proxy (direct route)",
         tunnelled.as_deref() == Some("eon"),
         &format!("{tunnelled:?}"),
+    );
+}
+
+/// A small extension written for the test, installed from a folder: a content script that
+/// uses `chrome.i18n`, a style, a `declarativeNetRequest` rule, one web-accessible image
+/// and one private file. Returns any installation error.
+fn install_test_extension(data: &Path) -> Option<String> {
+    let src = data.join("test-extension");
+    let w = |rel: &str, body: &[u8]| -> std::io::Result<()> {
+        let p = src.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(p, body)
+    };
+    let written = (|| -> std::io::Result<()> {
+        w("manifest.json", br#"{
+  "manifest_version": 3, "name": "__MSG_name__", "version": "1.0", "default_locale": "en",
+  "permissions": ["declarativeNetRequest"],
+  "content_scripts": [{ "matches": ["https://site.example/*"], "js": ["content.js"], "css": ["content.css"] }],
+  "web_accessible_resources": [{ "resources": ["img/*"], "matches": ["<all_urls>"] }],
+  "declarative_net_request": { "rule_resources": [{ "id": "r", "enabled": true, "path": "rules.json" }] }
+}"#)?;
+        w("_locales/en/messages.json", br#"{"name":{"message":"EON self-test extension"},"hello":{"message":"hello from an extension"}}"#)?;
+        w(
+            "content.js",
+            b"document.documentElement.dataset.eonExt = chrome.i18n.getMessage('hello');",
+        )?;
+        w("content.css", b".ext-hide { display: none !important; }")?;
+        w("rules.json", br#"[{"id":1,"action":{"type":"block"},"condition":{"urlFilter":"||ext-tracker.example^","resourceTypes":["image"]}}]"#)?;
+        w("img/open.png", PNG)?;
+        w("private.png", PNG)
+    })();
+    if let Err(e) = written {
+        return Some(e.to_string());
+    }
+    let mut lists = match eon_browser_core::lists::Lists::load(&data.join("lists")) {
+        Ok(l) => l,
+        Err(e) => return Some(e.to_string()),
+    };
+    crate::extensions::Extensions::load(data)
+        .install(&src, &mut lists)
+        .err()
+}
+
+fn extension_checks(run: &Run, install_error: Option<&str>, r: &mut Report) {
+    r.check(
+        "an extension installs from a folder (Chrome's \"load unpacked\")",
+        install_error.is_none(),
+        install_error.unwrap_or(""),
+    );
+    let blocked = s(run.page_eval(
+        "(()=>{const i=document.getElementById('exttrk');return String(i.complete&&i.naturalWidth)})()",
+    ));
+    r.check(
+        "an extension's declarativeNetRequest rule blocks in the shield",
+        blocked == "0",
+        &blocked,
+    );
+    let said = s(run.page_eval("String(document.documentElement.dataset.eonExt)"));
+    r.check(
+        "an extension's content script runs, with chrome.i18n",
+        said == "hello from an extension",
+        &said,
+    );
+    let hidden = s(run.page_eval("getComputedStyle(document.querySelector('.ext-hide')).display"));
+    r.check(
+        "an extension's stylesheet applies",
+        hidden == "none",
+        &hidden,
+    );
+    let war = s(run.page_eval("String(document.getElementById('extwar').naturalWidth)"));
+    r.check(
+        "an extension's web-accessible file loads in a page",
+        war == "1",
+        &war,
+    );
+    let private = s(run.page_eval("String(document.getElementById('extpriv').naturalWidth)"));
+    r.check(
+        "a site cannot load an extension's other files (no probing for extensions)",
+        private == "0",
+        &private,
     );
 }
