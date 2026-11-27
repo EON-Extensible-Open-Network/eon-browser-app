@@ -2498,7 +2498,7 @@ dependencies = [
 
 [[package]]
 name = "eon-browser"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "dpi",
  "eon-browser-core",
@@ -2529,7 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "eon-browser-route"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "arti-client",
  "eon-browser-core",

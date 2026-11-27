@@ -9,12 +9,12 @@ not a system webview. This is an **early alpha** (plan madde 50).
   choose to continue on HTTP for that site.
 - No search engine chosen for you; no suggestions sent while you type; no telemetry, no AI.
 - Tabs, history with search in the address bar, a private window (`Ctrl+Shift+N`).
-- **Tor in the browser** (from v0.0.1): choose the route in the bar — direct, Tor (a circuit
+- **Tor in the browser** (from v0.0.2): choose the route in the bar — direct, Tor (a circuit
   per site, renewed every ten minutes, New identity with `Ctrl+Shift+U`), or your own proxy
   server. Tor hides your address from sites; it does not make you as hard to recognise as
   Tor Browser does.
 
-- **Extensions from other browsers** (from v0.0.1, first stage): install a Chrome `.crx`,
+- **Extensions from other browsers** (from v0.0.2, first stage): install a Chrome `.crx`,
   a Firefox `.xpi` or a folder with `eon-browser --install-extension <file>`; it shows what
   the extension may do first. Blocking rules and page scripts and styles run; settings
   pages, pop-ups and background work come next.

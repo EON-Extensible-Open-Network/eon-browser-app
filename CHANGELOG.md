@@ -5,7 +5,19 @@ SPDX-FileCopyrightText: 2026 EON contributors
 
 # Changelog
 
-## v0.0.1 — 27 November 2026
+## v0.0.2 — 27 November 2026
+
+What v0.0.1 was meant to ship, with the two fixes its release found. **v0.0.1 was tagged
+but never published**: its release stopped at the self-test on Linux and macOS, as it
+should. Two timing assumptions, both exposed by a release build compiling its lists at
+first start:
+
+- at `HeadParsed`, `WebView::url` could still name the previous page, so a site's hiding
+  rules were looked up for the wrong address; the document's own address (recorded from
+  its main-frame request) is used, as blocking already did;
+- the self-test waited a fixed 500 ms for the bar's first state; it now waits for it.
+
+## v0.0.1 — 27 November 2026 (tagged, not published)
 
 **The route** (plan madde 50k): every connection goes through a small proxy of the
 browser's own, in a process of its own (`eon-browser-route`, shipped beside the browser),
