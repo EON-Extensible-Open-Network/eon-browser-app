@@ -28,6 +28,10 @@ pub fn data_dir() -> PathBuf {
 pub struct Settings {
     /// The search engine the person chose; `None` until they chose (madde 50e).
     pub search_engine: Option<String>,
+    /// The route (madde 50k): `direct` (or empty), `tor`, `proxy`.
+    pub route: String,
+    /// The proxy server's address, for `proxy`.
+    pub route_address: String,
 }
 
 impl Settings {

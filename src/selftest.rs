@@ -239,8 +239,16 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
             .map_err(|e| format!("{e:?}"))?,
     );
     let _ = page_ctx.make_current();
+    // The route process, as the window starts it (its Tor folder is throw-away too).
+    let route = crate::route_client::RouteClient::start(&data.join("tor")).map(std::sync::Arc::new);
     // Cookies and storage in memory; history and settings in a throw-away folder.
-    let servo = crate::engine::builder(true, &data, Box::new(Waker(tx))).build();
+    let servo = crate::engine::builder(
+        true,
+        &data,
+        route.as_ref().map(|r| r.proxy_uri()),
+        Box::new(Waker(tx)),
+    )
+    .build();
     let mut fixtures = Fixtures::default();
     fixtures.0.insert(
         "site.example/".into(),
@@ -269,6 +277,7 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
             data: data.clone(),
             fixtures: Some(fixtures),
             rules: Some(RULES.into()),
+            route: route.clone(),
         },
     );
     browser.attach_chrome(ui_ctx.clone());
@@ -307,6 +316,9 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
         run.browser.requests.borrow().is_empty(),
         &format!("{:?}", run.browser.requests.borrow()),
     );
+
+    // --- the route process (madde 50k), offline -------------------------------------
+    route_checks(route.as_deref(), &mut r);
 
     // --- typed address: cleaned and upgraded ------------------------------------------
     run.browser
@@ -521,4 +533,79 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
     std::fs::write(report_path, &r.text).map_err(|e| e.to_string())?;
     print!("{}", r.text);
     Ok(r.failed)
+}
+
+/// The route process: present, quiet until asked, closed to other programs, and a working
+/// tunnel for the browser. Everything here stays on 127.0.0.1.
+fn route_checks(route: Option<&crate::route_client::RouteClient>, r: &mut Report) {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    r.check(
+        "the route process starts beside the browser",
+        route.is_some(),
+        "",
+    );
+    let Some(route) = route else { return };
+    std::thread::sleep(Duration::from_millis(400));
+    let tor = route.status().tor;
+    r.check(
+        "Tor is not contacted until the person chooses it",
+        tor == "off",
+        &tor,
+    );
+    let Some(addr) = route.local_addr() else {
+        return;
+    };
+
+    let ask = |head: &str| -> Option<(String, TcpStream)> {
+        let mut s = TcpStream::connect(&addr).ok()?;
+        s.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+        s.write_all(head.as_bytes()).ok()?;
+        let mut buf = [0u8; 64];
+        let n = s.read(&mut buf).ok()?;
+        Some((String::from_utf8_lossy(&buf[..n]).into_owned(), s))
+    };
+    let refused = ask("CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n")
+        .map(|(h, _)| h)
+        .unwrap_or_default();
+    r.check(
+        "another program cannot use the browser's proxy without its secret",
+        refused.starts_with("HTTP/1.1 407"),
+        refused.lines().next().unwrap_or(""),
+    );
+
+    // A local echo server, reached through the proxy on the direct route.
+    let Ok(echo) = TcpListener::bind("127.0.0.1:0") else {
+        return;
+    };
+    let Ok(echo_addr) = echo.local_addr() else {
+        return;
+    };
+    std::thread::spawn(move || {
+        if let Ok((mut c, _)) = echo.accept() {
+            let mut b = [0u8; 16];
+            if let Ok(n) = c.read(&mut b) {
+                let _ = c.write_all(&b[..n]);
+            }
+        }
+    });
+    let head = format!(
+        "CONNECT {echo_addr} HTTP/1.1\r\nHost: {echo_addr}\r\nProxy-Authorization: {}\r\n\r\n",
+        route.proxy_authorization()
+    );
+    let tunnelled = ask(&head).and_then(|(h, mut s)| {
+        if !h.starts_with("HTTP/1.1 200") {
+            return Some(h);
+        }
+        s.write_all(b"eon").ok()?;
+        let mut b = [0u8; 3];
+        s.read_exact(&mut b).ok()?;
+        Some(String::from_utf8_lossy(&b).into_owned())
+    });
+    r.check(
+        "the browser's connections go through its proxy (direct route)",
+        tunnelled.as_deref() == Some("eon"),
+        &format!("{tunnelled:?}"),
+    );
 }

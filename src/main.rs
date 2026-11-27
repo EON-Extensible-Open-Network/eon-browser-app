@@ -17,6 +17,7 @@ mod engine;
 mod input;
 mod pages;
 mod paths;
+mod route_client;
 mod selftest;
 mod ui;
 mod window;

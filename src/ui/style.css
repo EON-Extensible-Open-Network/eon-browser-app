@@ -207,6 +207,28 @@ button {
   white-space: nowrap;
 }
 
+.route {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  margin-right: 2px;
+  border-radius: 99px;
+  color: var(--dim);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.route:hover { background: var(--hover); color: var(--mist); }
+.route-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+.route.tor { background: var(--selected); color: var(--pulse); }
+.route.tor.connecting .route-dot { background: var(--amber); }
+.route.tor.ready .route-dot { background: var(--mint); }
+.route.tor.failed .route-dot { background: var(--coral); }
+.route.proxy { color: var(--current); }
+.route.proxy .route-dot { background: var(--current); }
+
 .shield {
   height: 32px;
   display: flex;

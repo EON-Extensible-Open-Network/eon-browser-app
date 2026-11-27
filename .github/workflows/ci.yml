@@ -31,9 +31,14 @@ jobs:
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-      - run: cargo build
+      # Two programs, two cargo invocations: Arti and Servo cannot share one
+      # feature-unified build (route/Cargo.toml says why).
+      - run: cargo clippy -p eon-browser --all-targets -- -D warnings
+      - run: cargo clippy -p eon-browser-route --all-targets -- -D warnings
+      - run: cargo test -p eon-browser
+      - run: cargo test -p eon-browser-route
+      - run: cargo build -p eon-browser
+      - run: cargo build -p eon-browser-route
       # Windows: Servo's GL layer (surfman) needs WGL_NV_DX_interop, which every GPU driver
       # has and a GPU-less runner's software OpenGL does not. The Windows build is
       # self-tested on a real machine before each release; ANGLE (v0.0.1) lifts this.

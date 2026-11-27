@@ -236,9 +236,19 @@ impl App {
         ctx.make_current().map_err(|e| format!("{e:?}"))?;
 
         let data = crate::paths::data_dir();
-        let servo =
-            crate::engine::builder(self.private, &data, Box::new(Waker(self.proxy.clone())))
-                .build();
+        let tor_dir = if self.private {
+            std::env::temp_dir().join(format!("eon-browser-tor-{}", std::process::id()))
+        } else {
+            data.join("tor")
+        };
+        let route = crate::route_client::RouteClient::start(&tor_dir).map(std::sync::Arc::new);
+        let servo = crate::engine::builder(
+            self.private,
+            &data,
+            route.as_ref().map(|r| r.proxy_uri()),
+            Box::new(Waker(self.proxy.clone())),
+        )
+        .build();
         let scale = window.scale_factor();
         let base_h = (f64::from(BASE_CHROME) * scale).round() as u32;
         let ui_ctx =
@@ -265,8 +275,10 @@ impl App {
                 data,
                 fixtures: None,
                 rules: None,
+                route,
             },
         );
+        browser.restore_route();
         browser.attach_chrome(ui_ctx.clone());
         browser.open_start(self.start.take());
         let running = Running {

@@ -26,11 +26,16 @@ until you open a page. Windows, Linux and macOS. **Early alpha.**
   agent so you are one of many.
 - Tabs, history with full-text search in the address bar, a private window that writes
   nothing (`Ctrl+Shift+N`), the last session restored.
+- **The route**: directly, **through Tor** (Arti, the Tor Project's Rust Tor, inside the
+  browser: a circuit per site, renewed every ten minutes, New identity with
+  `Ctrl+Shift+U`, `.onion` addresses), or through a proxy server you bring. Tor hides your
+  address; it does not make you as hard to recognise as Tor Browser does, and the route
+  page says so.
 
 ## What it does not do yet
 
 **Not sandboxed on Windows** (Servo does not yet isolate pages the way Chrome and Firefox
-do) — not for banking yet. **No video or audio** until v0.0.1, **no DRM** ever. Some sites
+do) — not for banking yet. **No video or audio** yet, **no DRM** ever. Some sites
 break. No bookmarks bar, downloads, permission prompts, extensions or sync yet. The roadmap
 is [`eon-docs/browser/plan.md`](https://github.com/EON-Extensible-Open-Network/eon-docs/blob/main/browser/plan.md).
 
@@ -50,9 +55,14 @@ eon-browser --selftest <file>  the promises, checked offscreen with the real eng
 
 Data lives in `eon-browser-data/` beside the executable (`EON_BROWSER_DATA` overrides).
 
+The route is a second program, `eon-browser-route`, beside the browser: a proxy on
+`127.0.0.1` that answers only to a secret the browser gives it at start, and that exits
+when the browser does. It is built separately (`cargo build -p eon-browser-route`):
+Arti and Servo cannot share one feature-unified build (see `route/Cargo.toml`).
+
 ## Checks
 
-`cargo test`, and `--selftest`: 26 checks through the real engine against pages the
+`cargo test`, and `--selftest`: 30 checks through the real engine against pages the
 browser serves itself — blocking, element hiding, link cleaning, HTTPS-only, the user agent,
 GPC, keyboard (Turkish letters) and wheel input, the bar, the own pages, and that a site
 can neither reach the bar's bridge nor choose your search engine. Emptying the rules makes

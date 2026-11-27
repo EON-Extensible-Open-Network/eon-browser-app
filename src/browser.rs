@@ -71,6 +71,8 @@ pub struct Options {
     pub fixtures: Option<Fixtures>,
     /// Rules to use instead of the stored lists (the self-test).
     pub rules: Option<String>,
+    /// The route process, if it started (madde 50k).
+    pub route: Option<std::sync::Arc<crate::route_client::RouteClient>>,
 }
 
 struct Tab {
@@ -107,6 +109,7 @@ pub struct Browser {
     fixtures: Option<Fixtures>,
     me: RefCell<Weak<Browser>>,
     ui_dirty: Cell<bool>,
+    route: Option<std::sync::Arc<crate::route_client::RouteClient>>,
     /// Scripts to run in a page on the next turn: Servo cannot start an evaluation from
     /// inside another one's callback.
     deferred: RefCell<Vec<(WebView, String)>>,
@@ -223,6 +226,7 @@ impl Browser {
             fixtures: options.fixtures,
             me: RefCell::new(Weak::new()),
             ui_dirty: Cell::new(false),
+            route: options.route,
             deferred: RefCell::new(Vec::new()),
             requests: RefCell::new(Vec::new()),
         });
@@ -281,6 +285,17 @@ impl Browser {
     }
 
     /// Open the tabs of the last session, or `start`, or a new tab.
+    /// The route the person chose last time, sent to the route process at start.
+    pub fn restore_route(&self) {
+        let (kind, address) = {
+            let s = self.settings.borrow();
+            (s.route.clone(), s.route_address.clone())
+        };
+        if let (Some(r), false) = (&self.route, kind.is_empty() || kind == "direct") {
+            r.set_route(&kind, &address);
+        }
+    }
+
     pub fn open_start(&self, start: Option<Url>) {
         if let Some(url) = start {
             self.new_tab(url, true);
@@ -468,7 +483,36 @@ impl Browser {
                 }
             }
             Shortcut::NewPrivateWindow => self.host.open_private_window(),
+            Shortcut::NewIdentity => self.new_identity(),
         }
+    }
+
+    /// Tor Browser's New identity: every site gets a new circuit (so a new exit and a new
+    /// address), every cookie and stored site data is cleared, and the tabs reload.
+    pub fn new_identity(&self) {
+        if let Some(r) = &self.route {
+            r.new_identity();
+        }
+        let data = self.servo.site_data_manager();
+        data.clear_cookies(None);
+        let sites: Vec<String> = data
+            .site_data(servo::StorageType::all())
+            .iter()
+            .map(servo::SiteData::name)
+            .collect();
+        let names: Vec<&str> = sites.iter().map(String::as_str).collect();
+        data.clear_site_data(&names, servo::StorageType::all());
+        for t in self.tabs.borrow().iter() {
+            t.view.reload();
+        }
+        self.with_tab_active_note("New identity: new circuits, cookies cleared");
+    }
+
+    fn with_tab_active_note(&self, note: &str) {
+        if let Some(t) = self.tabs.borrow().get(self.active.get()) {
+            *t.note.borrow_mut() = Some(note.to_string());
+        }
+        self.mark_ui();
     }
 
     pub fn focus_address(&self) {
@@ -525,6 +569,9 @@ impl Browser {
     /// Send the bar the current state, if anything changed. Called after each turn of the
     /// event loop, so a page blocking two hundred requests updates the bar once.
     pub fn flush_ui(&self) {
+        if self.route.as_ref().is_some_and(|r| r.take_changed()) {
+            self.ui_dirty.set(true);
+        }
         let deferred = std::mem::take(&mut *self.deferred.borrow_mut());
         for (view, script) in deferred {
             view.evaluate_javascript(script, |_| {});
@@ -577,6 +624,14 @@ impl Browser {
             },
             note: t.and_then(|t| t.note.borrow().clone()),
             private: self.private,
+            route: self
+                .route
+                .as_ref()
+                .map_or_else(|| "none".to_string(), |r| r.status().kind),
+            tor: self
+                .route
+                .as_ref()
+                .map_or_else(|| "off".to_string(), |r| r.status().tor),
         }
     }
 
@@ -676,6 +731,26 @@ impl Browser {
                     view.load(target);
                 }
             }
+            "/set-route" => {
+                let kind = q("kind");
+                let address = q("address");
+                if let Some(r) = &self.route {
+                    r.set_route(&kind, &address);
+                }
+                {
+                    let mut s = self.settings.borrow_mut();
+                    s.route = kind;
+                    s.route_address = address;
+                }
+                if !self.private {
+                    let _ = self.settings.borrow().save(&self.data);
+                }
+                view.load(pages::url("/route"));
+            }
+            "/new-identity" => {
+                self.new_identity();
+                view.load(pages::url("/route"));
+            }
             "/allow-http" => {
                 if let Ok(target) = Url::parse(&q("url")) {
                     if let Ok(mut s) = self.profile.site(&target) {
@@ -738,6 +813,17 @@ impl Browser {
             respond(load, StatusCode::OK, "font/woff2", crate::ui::FONT.to_vec());
             return;
         }
+        if url.path() == "/route" {
+            let status = self.route.as_ref().map(|r| r.status());
+            let html = pages::route(status.as_ref());
+            respond(
+                load,
+                StatusCode::OK,
+                "text/html; charset=utf-8",
+                html.into_bytes(),
+            );
+            return;
+        }
         let chosen = self.settings.borrow().search_engine.clone();
         match pages::render(url, &self.engines, chosen.as_deref(), VERSION) {
             Some(html) => respond(
@@ -793,6 +879,7 @@ impl Browser {
                 self.host.chrome_height(px.clamp(84, 600) as u32);
             }
             "focusPage" => self.host.focus_page(),
+            "routePage" => self.new_tab(pages::url("/route"), true),
             _ => return serde_json::json!({ "ok": false }),
         }
         self.mark_ui();
@@ -855,6 +942,10 @@ struct UiState {
     security: &'static str,
     note: Option<String>,
     private: bool,
+    /// `direct`, `tor`, `proxy`, or `none` when the route process is unavailable.
+    route: String,
+    /// `off`, `connecting`, `ready`, `failed`.
+    tor: String,
 }
 
 #[derive(Serialize)]

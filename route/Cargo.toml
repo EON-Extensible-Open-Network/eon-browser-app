@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 EON contributors
+
+[package]
+name = "eon-browser-route"
+description = "EON Browser's route process: the local proxy every connection goes through, sending it directly, through Tor (Arti) or through a proxy server the person brings."
+version = "0.0.1-alpha"
+edition = "2021"
+rust-version = "1.98"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/EON-Extensible-Open-Network/eon-browser-app"
+publish = false
+
+# A process of its own, built in its own cargo invocation: Arti turns on derive_more's
+# "full" feature, whose PartialEq/Eq derives shadow std's in Servo's webrender
+# (`#[macro_use] extern crate derive_more`), so the two cannot share one feature-unified
+# build. Isolation is also the better shape: the network-facing Tor code is apart from
+# the browser, and a Tor failure cannot take the window down.
+[dependencies]
+# Tor (madde 50k): Arti, the Tor Project's Rust implementation; rustls, not native-tls.
+arti-client = { version = "0.48.0", default-features = false, features = ["tokio", "rustls", "compression", "onion-service-client"] }
+tor-rtcompat = { version = "0.48.0", default-features = false, features = ["tokio", "rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs"] }
+# One circuit per *site*: the public suffix list, through the core.
+eon-browser-core = { git = "https://github.com/EON-Extensible-Open-Network/eon-browser-core", rev = "2cfb9fd6d21423e1a84b453987f118a3ea26f22c", version = "0.0.0-alpha" }
+url = "2.5.9"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+cast_possible_truncation = "allow"

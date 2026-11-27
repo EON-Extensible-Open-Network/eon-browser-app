@@ -86,6 +86,15 @@ function renderBar() {
     ? state.blocked + ' ads and trackers blocked on this page. Click to turn blocking off for this site.'
     : 'Blocking is off for this site. Click to turn it on.';
   $('private').hidden = !state.private;
+
+  const route = $('route');
+  const names = { direct: 'Direct', tor: 'Tor', proxy: 'Proxy', none: 'Direct' };
+  $('route-name').textContent = names[state.route] || 'Direct';
+  route.className = 'route ' + (state.route === 'tor' ? 'tor ' + state.tor : state.route);
+  route.title = state.route === 'tor'
+    ? { connecting: 'Connecting to the Tor network…', ready: 'Through Tor: a circuit per site. Click for New identity.',
+        failed: 'Tor could not connect. Click for details.' }[state.tor] || 'Tor'
+    : state.route === 'proxy' ? 'Through your proxy server.' : 'Straight to each site. Click to use Tor or a proxy.';
 }
 
 window.eonState = (s) => {
@@ -175,5 +184,6 @@ $('forward').addEventListener('click', () => cmd('forward'));
 $('reload').addEventListener('click', () => cmd('reload'));
 $('new-tab').addEventListener('click', () => cmd('newTab'));
 $('shield').addEventListener('click', () => cmd('shields'));
+$('route').addEventListener('click', () => cmd('routePage'));
 
 cmd('ready').then((s) => { if (s && s.tabs) window.eonState(s); });

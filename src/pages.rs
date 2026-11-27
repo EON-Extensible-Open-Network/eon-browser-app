@@ -22,7 +22,10 @@ pub fn url(path_and_query: &str) -> Url {
 
 /// Whether `path` is an action rather than a page.
 pub fn is_action(path: &str) -> bool {
-    matches!(path, "/choose" | "/proceed" | "/allow-http")
+    matches!(
+        path,
+        "/choose" | "/proceed" | "/allow-http" | "/set-route" | "/new-identity"
+    )
 }
 
 pub fn escape(s: &str) -> String {
@@ -186,6 +189,83 @@ fn https_failed(target: &str) -> String {
              <p style=\"margin-top:20px\">Your choice is remembered for this site only.</p></div>",
             escape(target),
             enc(target)
+        ),
+    )
+}
+
+/// The route page (madde 50k).
+pub fn route(status: Option<&crate::route_client::Status>) -> String {
+    let Some(s) = status else {
+        return page(
+            "Route",
+            &format!(
+                "{MARK}<h1>Route</h1><p>The route program (<code>eon-browser-route</code>) is not \
+                 beside EON Browser, so every connection goes directly. Put it back from the \
+                 release to use Tor or a proxy server.</p>"
+            ),
+        );
+    };
+    let tor_line = match s.tor.as_str() {
+        "connecting" => "Connecting to the Tor network…".to_string(),
+        "ready" => "Connected to the Tor network.".to_string(),
+        "failed" => format!(
+            "Could not reach the Tor network: {}. Tor may be blocked on this connection; \
+             bridges come in a later version.",
+            escape(&s.detail)
+        ),
+        _ => "Not connected. Nothing is sent to the Tor network until you choose it.".to_string(),
+    };
+    let card = |kind: &str, title: &str, text: &str| {
+        let on = if s.kind == kind {
+            " style=\"border-color:var(--pulse)\""
+        } else {
+            ""
+        };
+        format!(
+            "<a class=\"card\" href=\"/set-route?kind={kind}\"{on}><b>{title}{}</b><span>{text}</span></a>",
+            if s.kind == kind { " — on" } else { "" }
+        )
+    };
+    let identity = if s.kind == "tor" {
+        "<div class=\"actions\"><a class=\"btn\" href=\"/new-identity\">New identity</a></div>\
+         <p style=\"margin-top:12px\">New circuits for every site and every cookie cleared \
+         (<code>Ctrl+Shift+U</code>). Each site already gets its own circuit, renewed every \
+         ten minutes, so the address it sees keeps changing.</p>"
+    } else {
+        ""
+    };
+    page(
+        "Route",
+        &format!(
+            "{MARK}<h1>Route</h1><p>How EON Browser reaches the web.</p>\
+             <div class=\"grid\">{}{}</div>\
+             <form action=\"/set-route\" method=\"get\" class=\"card\" style=\"display:block\">\
+             <b>Your proxy server{}</b><span>An HTTP proxy you run or trust, \
+             <code>http://host:port</code>.</span>\
+             <input type=\"hidden\" name=\"kind\" value=\"proxy\">\
+             <p><input name=\"address\" value=\"{}\" placeholder=\"http://host:port\" \
+             style=\"width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);\
+             background:var(--ink);color:var(--mist)\"></p>\
+             <button style=\"padding:8px 14px;border-radius:8px;border:0;background:var(--pulse);\
+             color:var(--ink);font-weight:600\">Use this server</button></form>\
+             <p><b>Tor:</b> {tor_line}</p>{identity}\
+             <ul class=\"facts\"><li><b>What Tor does here:</b> sites see a Tor exit's address \
+             instead of yours, and your network sees only that you use Tor.</li>\
+             <li><b>What it does not do:</b> make you as hard to recognise as Tor Browser does. \
+             Tor Browser makes every user look alike; EON Browser does not join that crowd. \
+             For the strongest anonymity, use Tor Browser.</li></ul>",
+            card(
+                "direct",
+                "Direct",
+                "Straight to each site, as fast as your connection."
+            ),
+            card(
+                "tor",
+                "Tor",
+                "Through three volunteer relays; a circuit per site, renewed every ten minutes."
+            ),
+            if s.kind == "proxy" { " — on" } else { "" },
+            escape(&s.address)
         ),
     )
 }

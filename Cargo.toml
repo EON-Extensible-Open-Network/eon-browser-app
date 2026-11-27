@@ -5,7 +5,7 @@
 name = "eon-browser"
 description = "EON Browser: a web browser on Servo, not Chromium. Blocking built in, no telemetry, no AI, no request until you open a page."
 # Tag v0.0.0 -> 0.0.0-alpha.
-version = "0.0.0-alpha"
+version = "0.0.1-alpha"
 edition = "2021"
 rust-version = "1.98"
 license = "GPL-3.0-or-later"
@@ -37,6 +37,12 @@ http = "1.4"
 # Messages between the interface and the browser.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
+
+# Two programs, built in two cargo invocations (`-p eon-browser`, `-p eon-browser-route`):
+# see route/Cargo.toml for why they must not share one feature-unified build.
+[workspace]
+members = [".", "route"]
+resolver = "2"
 
 [profile.release]
 lto = "thin"

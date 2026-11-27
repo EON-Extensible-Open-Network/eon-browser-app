@@ -49,17 +49,29 @@ jobs:
           ls -la seed
           echo "EON_BROWSER_SEED_DIR=$PWD/seed" >> "$GITHUB_ENV"
       - run: rustup show
-      - run: cargo build --release --locked
+      # Two programs, two cargo invocations (route/Cargo.toml says why).
+      - run: cargo build --release --locked -p eon-browser
+      - run: cargo build --release --locked -p eon-browser-route
       # Windows: see ci.yml; the published Windows binary is self-tested on a real machine.
       - name: Self-test the binary about to be published
         if: runner.os != 'Windows'
         shell: bash
         run: target/release/eon-browser${{ matrix.suffix }} --selftest report.txt || { cat report.txt; exit 1; }
+      # One archive per platform: the browser and its route process (Tor), side by side,
+      # as the browser expects to find them.
       - name: Stage
         shell: bash
         run: |
-          mkdir dist
-          cp "target/release/eon-browser${{ matrix.suffix }}" "dist/eon-browser-${GITHUB_REF_NAME}-${{ matrix.platform }}${{ matrix.suffix }}"
+          name="eon-browser-${GITHUB_REF_NAME}-${{ matrix.platform }}"
+          mkdir -p "pkg/$name" dist
+          cp "target/release/eon-browser${{ matrix.suffix }}" "target/release/eon-browser-route${{ matrix.suffix }}" \
+             LICENSE NOTICE "pkg/$name/"
+          cd pkg
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip "../dist/$name.zip" "$name" > /dev/null
+          else
+            zip -qr "../dist/$name.zip" "$name"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}
