@@ -318,8 +318,16 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
         cfg!(debug_assertions) || seeded >= 7,
         &format!("{seeded} lists"),
     );
-    run.settle(500);
-    let tabs = s(run.ui_eval("document.querySelectorAll('.tab').length"));
+    // The bar's first state can arrive later than the page in a release build, where the
+    // lists are compiled at first start: wait for it rather than for a fixed time.
+    let mut tabs = String::new();
+    run.pump_until(
+        || {
+            tabs = s(run.ui_eval("document.querySelectorAll('.tab').length"));
+            tabs == "1"
+        },
+        Duration::from_secs(15),
+    );
     r.check("the bar shows the tab", tabs == "1", &tabs);
     let title = s(run.page_eval("document.title"));
     r.check(
@@ -530,8 +538,14 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
         true,
     );
     run.wait_url("https://site.example/read");
-    run.settle(300);
-    let tabs = s(run.ui_eval("document.querySelectorAll('.tab').length"));
+    let mut tabs = String::new();
+    run.pump_until(
+        || {
+            tabs = s(run.ui_eval("document.querySelectorAll('.tab').length"));
+            tabs == "2"
+        },
+        Duration::from_secs(10),
+    );
     r.check("a second tab appears in the bar", tabs == "2", &tabs);
 
     // Shut the engine down in order before its folder goes away (see Browser::shutdown).

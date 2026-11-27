@@ -810,8 +810,18 @@ impl Browser {
         }
     }
 
+    /// The address of the document a view shows now: recorded when its main-frame request
+    /// arrived, falling back to `WebView::url`.
+    fn document_url(&self, view: &WebView) -> Option<Url> {
+        self.with_tab(view, |t| t.top.borrow().clone())
+            .flatten()
+            .or_else(|| view.url())
+    }
+
     fn after_load(&self, view: &WebView) {
-        let Some(url) = view.url() else { return };
+        let Some(url) = self.document_url(view) else {
+            return;
+        };
         self.run_extensions(view, &url, crate::extensions::Stage::End);
         // HTTPS-only: an upgraded load that failed offers HTTP, for this site, by choice.
         let upgraded = self
@@ -1041,8 +1051,9 @@ impl WebViewDelegate for Browser {
             }
             LoadStatus::HeadParsed => {
                 // Element hiding, first step: the rules written for this site, as early as
-                // the page has a head to put them in.
-                if let Some(url) = view.url() {
+                // the page has a head to put them in. The document's own address, not
+                // WebView::url, which can still name the previous page at this point.
+                if let Some(url) = self.document_url(&view) {
                     let on = self.profile.site(&url).map_or(true, |s| s.shields);
                     if on && matches!(url.scheme(), "http" | "https") {
                         let css = self.shield.borrow().cosmetic(url.as_str()).css;
