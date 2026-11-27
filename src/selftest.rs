@@ -505,6 +505,17 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
     let tabs = s(run.ui_eval("document.querySelectorAll('.tab').length"));
     r.check("a second tab appears in the bar", tabs == "2", &tabs);
 
+    // Shut the engine down in order before its folder goes away (see Browser::shutdown).
+    run.browser.shutdown();
+    let Run {
+        browser,
+        _contexts: contexts,
+        ..
+    } = run;
+    drop(browser);
+    // The two offscreen GL contexts are left to the process's end: surfman (on WGL)
+    // asserts when a context that is not current is torn down after another one.
+    std::mem::forget(contexts);
     let _ = std::fs::remove_dir_all(&data);
     let _ = writeln!(r.text, "\n{} failed", r.failed);
     std::fs::write(report_path, &r.text).map_err(|e| e.to_string())?;

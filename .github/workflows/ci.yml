@@ -28,16 +28,17 @@ jobs:
           sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev \
             libxkbcommon-x11-0 libwayland-dev libegl1-mesa-dev libgl1-mesa-dri libgles2-mesa-dev \
             libfontconfig1-dev libfreetype6-dev libdbus-1-dev libudev-dev
-      - name: A software OpenGL for the offscreen self-test (the runner has no GPU)
-        if: runner.os == 'Windows'
-        uses: ssciwr/setup-mesa-dist-win@v2
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - run: cargo build
+      # Windows: Servo's GL layer (surfman) needs WGL_NV_DX_interop, which every GPU driver
+      # has and a GPU-less runner's software OpenGL does not. The Windows build is
+      # self-tested on a real machine before each release; ANGLE (v0.0.1) lifts this.
       - name: Self-test (the real engine, offscreen, no network)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p st

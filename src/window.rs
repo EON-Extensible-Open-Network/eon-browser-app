@@ -309,6 +309,7 @@ impl ApplicationHandler<Wake> for App {
         let Some(r) = &self.running else { return };
         match event {
             WindowEvent::CloseRequested => {
+                r.browser.shutdown();
                 event_loop.exit();
                 return;
             }

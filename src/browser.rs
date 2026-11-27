@@ -263,6 +263,19 @@ impl Browser {
             .map(|t| t.view.clone())
     }
 
+    /// Close every view. Each tab holds the browser as its delegate, so the browser (and
+    /// Servo inside it) can only be dropped once the views are gone; dropping Servo then
+    /// shuts the engine down in order instead of at process exit, where SpiderMonkey
+    /// aborts on a mutex its threads still hold.
+    pub fn shutdown(&self) {
+        self.save_session();
+        self.deferred.borrow_mut().clear();
+        let tabs = std::mem::take(&mut *self.tabs.borrow_mut());
+        drop(tabs);
+        let ui = self.ui.borrow_mut().take();
+        drop(ui);
+    }
+
     pub fn tab_count(&self) -> usize {
         self.tabs.borrow().len()
     }
