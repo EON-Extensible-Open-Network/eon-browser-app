@@ -548,6 +548,40 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
     );
     r.check("a second tab appears in the bar", tabs == "2", &tabs);
 
+    // --- bookmarks and history ----------------------------------------------------
+    run.browser.toggle_bookmark();
+    let mut star = String::new();
+    run.pump_until(
+        || {
+            star = s(run.ui_eval("document.querySelector('#star img').getAttribute('src')"));
+            star.contains("star-on")
+        },
+        Duration::from_secs(5),
+    );
+    r.check(
+        "Ctrl+D bookmarks the page and the star says so",
+        star.contains("star-on"),
+        &star,
+    );
+    run.browser.go("eon:bookmarks");
+    run.pump_until(
+        || run.url().ends_with("/bookmarks"),
+        Duration::from_secs(10),
+    );
+    run.settle(300);
+    let listed = s(run.page_eval("String(document.body.innerText.includes('site.example/read'))"));
+    r.check("the bookmarks page lists it", listed == "true", &listed);
+    run.browser.go("eon:history");
+    run.pump_until(|| run.url().ends_with("/history"), Duration::from_secs(10));
+    run.settle(300);
+    let visited =
+        s(run.page_eval("String(document.body.innerText.includes('https://site.example/?id=7'))"));
+    r.check(
+        "the history page lists the pages visited",
+        visited == "true",
+        &visited,
+    );
+
     // Shut the engine down in order before its folder goes away (see Browser::shutdown).
     run.browser.shutdown();
     let Run {

@@ -31,6 +31,8 @@ pub fn is_action(path: &str) -> bool {
             | "/new-identity"
             | "/ext-toggle"
             | "/ext-remove"
+            | "/clear-history"
+            | "/unbookmark"
     )
 }
 
@@ -276,6 +278,123 @@ pub fn route(status: Option<&crate::route_client::Status>) -> String {
     )
 }
 
+/// The day a Unix time falls on, as `YYYY-MM-DD` (UTC).
+fn day(at: u64) -> String {
+    let days = (at / 86_400) as i64;
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn link_row(url: &str, title: Option<&str>, extra: &str) -> String {
+    format!(
+        "<li><a href=\"{}\" style=\"color:var(--mist);text-decoration:none\">{}</a>\
+         <br><code style=\"color:var(--dim)\">{}</code>{extra}</li>",
+        escape(url),
+        escape(title.filter(|t| !t.is_empty()).unwrap_or(url)),
+        escape(url)
+    )
+}
+
+const SEARCH_FORM: &str = "<form action=\"/history\" method=\"get\"><input name=\"q\" \
+    placeholder=\"Search your history\" style=\"width:100%;padding:10px;border-radius:10px;\
+    border:1px solid var(--line);background:var(--deck);color:var(--mist);font:inherit\"></form>";
+
+/// The history page: recent visits by day, kept only on this computer.
+pub fn history(visits: &[eon_browser_core::profile::Visit], private: bool) -> String {
+    let mut body = String::new();
+    let mut current = String::new();
+    for v in visits {
+        let d = day(v.at);
+        if d != current {
+            if !current.is_empty() {
+                body.push_str("</ul>");
+            }
+            let _ = write!(
+                body,
+                "<h2 style=\"font-size:15px;margin:28px 0 4px\">{d}</h2><ul class=\"facts\">"
+            );
+            current = d;
+        }
+        body.push_str(&link_row(&v.url, v.title.as_deref(), ""));
+    }
+    if !current.is_empty() {
+        body.push_str("</ul>");
+    }
+    if visits.is_empty() {
+        body = if private {
+            "<p>A private window keeps no history.</p>".into()
+        } else {
+            "<p>No history yet.</p>".into()
+        };
+    }
+    page(
+        "History",
+        &format!(
+            "{MARK}<h1>History</h1><p>Kept only on this computer; nothing about it is sent \
+             anywhere.</p>{SEARCH_FORM}\
+             <div class=\"actions\"><a class=\"btn quiet\" href=\"/clear-history?since=hour\">Forget the last hour</a>\
+             <a class=\"btn quiet\" href=\"/clear-history?since=today\">Forget today</a>\
+             <a class=\"btn quiet\" href=\"/clear-history?since=all\">Forget everything</a></div>{body}"
+        ),
+    )
+}
+
+/// History search results.
+pub fn history_search(q: &str, found: &[eon_browser_core::profile::Suggestion]) -> String {
+    let rows = found.iter().fold(String::new(), |mut out, s| {
+        out.push_str(&link_row(&s.url, s.title.as_deref(), ""));
+        out
+    });
+    page(
+        "History",
+        &format!(
+            "{MARK}<h1>History</h1>{SEARCH_FORM}<p style=\"margin-top:16px\">{} for <b>{}</b>. \
+             <a href=\"/history\">All history</a></p><ul class=\"facts\">{rows}</ul>",
+            if found.len() == 1 {
+                "1 page".to_string()
+            } else {
+                format!("{} pages", found.len())
+            },
+            escape(q)
+        ),
+    )
+}
+
+/// The bookmarks page.
+pub fn bookmarks(list: &[eon_browser_core::profile::Bookmark]) -> String {
+    let rows = list
+        .iter()
+        .filter(|b| b.url.is_some())
+        .fold(String::new(), |mut out, b| {
+            let extra = format!(
+            " <a href=\"/unbookmark?id={}\" style=\"color:var(--dim);font-size:13px\">Remove</a>",
+            b.id
+        );
+            out.push_str(&link_row(
+                b.url.as_deref().unwrap_or(""),
+                Some(&b.title),
+                &extra,
+            ));
+            out
+        });
+    let body = if rows.is_empty() {
+        "<p>No bookmarks yet. Press <code>Ctrl+D</code> or the star in the bar on any page.</p>"
+            .to_string()
+    } else {
+        format!("<ul class=\"facts\">{rows}</ul>")
+    };
+    page("Bookmarks", &format!("{MARK}<h1>Bookmarks</h1>{body}"))
+}
+
 /// The extensions page (madde 50h, stage 1).
 pub fn extensions(list: &[crate::extensions::Installed]) -> String {
     let mut rows = String::new();
@@ -366,6 +485,13 @@ mod tests {
     fn unknown_pages_and_actions() {
         assert!(render(&url("/nope"), &[], None, "0").is_none());
         assert!(is_action("/choose") && is_action("/allow-http") && !is_action("/welcome"));
+    }
+
+    #[test]
+    fn days_from_unix_time() {
+        assert_eq!(day(0), "1970-01-01");
+        assert_eq!(day(1_764_201_600), "2025-11-27");
+        assert_eq!(day(1_709_164_800), "2024-02-29");
     }
 
     #[test]

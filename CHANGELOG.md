@@ -17,6 +17,10 @@ first start:
   its main-frame request) is used, as blocking already did;
 - the self-test waited a fixed 500 ms for the bar's first state; it now waits for it.
 
+Also new: **history and bookmarks in the window** — `eon:history` (by day, searchable,
+"forget the last hour / today / everything"), `eon:bookmarks`, a star in the bar and
+`Ctrl+D`, `Ctrl+H`. The self-test has 40 checks.
+
 ## v0.0.1 — 27 November 2026 (tagged, not published)
 
 **The route** (plan madde 50k): every connection goes through a small proxy of the

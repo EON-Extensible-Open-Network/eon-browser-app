@@ -96,6 +96,9 @@ pub enum Shortcut {
     NewPrivateWindow,
     /// Tor Browser's shortcut: every circuit and every cookie renewed.
     NewIdentity,
+    /// Add the page to bookmarks, or remove it.
+    Bookmark,
+    History,
 }
 
 /// The shortcut a key press means, if any. Ctrl on Windows and Linux, Cmd on macOS.
@@ -125,6 +128,8 @@ pub fn shortcut(event: &KeyEvent, mods: ModifiersState) -> Option<Shortcut> {
             "r" => Some(Shortcut::Reload),
             "n" | "p" if shift => Some(Shortcut::NewPrivateWindow),
             "u" if shift => Some(Shortcut::NewIdentity),
+            "d" if !shift => Some(Shortcut::Bookmark),
+            "h" if !shift => Some(Shortcut::History),
             "=" | "+" => Some(Shortcut::ZoomIn),
             "-" => Some(Shortcut::ZoomOut),
             "0" => Some(Shortcut::ZoomReset),

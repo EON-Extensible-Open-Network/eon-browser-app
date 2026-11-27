@@ -496,6 +496,8 @@ impl Browser {
             }
             Shortcut::NewPrivateWindow => self.host.open_private_window(),
             Shortcut::NewIdentity => self.new_identity(),
+            Shortcut::Bookmark => self.toggle_bookmark(),
+            Shortcut::History => self.new_tab(pages::url("/history"), true),
         }
     }
 
@@ -523,6 +525,30 @@ impl Browser {
     fn with_tab_active_note(&self, note: &str) {
         if let Some(t) = self.tabs.borrow().get(self.active.get()) {
             *t.note.borrow_mut() = Some(note.to_string());
+        }
+        self.mark_ui();
+    }
+
+    /// Bookmark the page in the active tab, or remove its bookmark.
+    pub fn toggle_bookmark(&self) {
+        let Some(view) = self.active_view() else {
+            return;
+        };
+        let Some(url) = self.document_url(&view) else {
+            return;
+        };
+        if !matches!(url.scheme(), "http" | "https") {
+            return;
+        }
+        match self.profile.bookmark_for(&url) {
+            Ok(Some(id)) => {
+                let _ = self.profile.remove_bookmark(id);
+            }
+            Ok(None) => {
+                let title = view.page_title().unwrap_or_else(|| display(&url));
+                let _ = self.profile.add_bookmark(None, &title, &url, now());
+            }
+            Err(_) => {}
         }
         self.mark_ui();
     }
@@ -644,6 +670,9 @@ impl Browser {
                 .route
                 .as_ref()
                 .map_or_else(|| "off".to_string(), |r| r.status().tor),
+            bookmarked: url
+                .as_ref()
+                .is_some_and(|u| matches!(self.profile.bookmark_for(u), Ok(Some(_)))),
         }
     }
 
@@ -777,6 +806,21 @@ impl Browser {
                 }
                 view.load(pages::url("/extensions"));
             }
+            "/clear-history" => {
+                let since = match q("since").as_str() {
+                    "hour" => now().saturating_sub(3600),
+                    "today" => now() - now() % 86_400,
+                    _ => 0,
+                };
+                let _ = self.profile.clear_history(since);
+                view.load(pages::url("/history"));
+            }
+            "/unbookmark" => {
+                if let Ok(id) = q("id").parse::<i64>() {
+                    let _ = self.profile.remove_bookmark(id);
+                }
+                view.load(pages::url("/bookmarks"));
+            }
             "/new-identity" => {
                 self.new_identity();
                 view.load(pages::url("/route"));
@@ -870,6 +914,38 @@ impl Browser {
             respond(load, StatusCode::OK, "font/woff2", crate::ui::FONT.to_vec());
             return;
         }
+        if url.path() == "/history" {
+            let q = url
+                .query_pairs()
+                .find(|(k, _)| k == "q")
+                .map(|(_, v)| v.into_owned())
+                .unwrap_or_default();
+            let html = if q.trim().is_empty() {
+                pages::history(
+                    &self.profile.history(300, None).unwrap_or_default(),
+                    self.private,
+                )
+            } else {
+                pages::history_search(&q, &self.profile.suggest(&q, 100).unwrap_or_default())
+            };
+            respond(
+                load,
+                StatusCode::OK,
+                "text/html; charset=utf-8",
+                html.into_bytes(),
+            );
+            return;
+        }
+        if url.path() == "/bookmarks" {
+            let html = pages::bookmarks(&self.profile.bookmarks(None).unwrap_or_default());
+            respond(
+                load,
+                StatusCode::OK,
+                "text/html; charset=utf-8",
+                html.into_bytes(),
+            );
+            return;
+        }
         if url.path() == "/extensions" {
             let html = pages::extensions(&self.extensions.borrow().list);
             respond(
@@ -947,6 +1023,7 @@ impl Browser {
             }
             "focusPage" => self.host.focus_page(),
             "routePage" => self.new_tab(pages::url("/route"), true),
+            "bookmark" => self.toggle_bookmark(),
             _ => return serde_json::json!({ "ok": false }),
         }
         self.mark_ui();
@@ -1013,6 +1090,8 @@ struct UiState {
     route: String,
     /// `off`, `connecting`, `ready`, `failed`.
     tor: String,
+    /// The page in the active tab is bookmarked.
+    bookmarked: bool,
 }
 
 #[derive(Serialize)]

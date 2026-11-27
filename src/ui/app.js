@@ -86,6 +86,10 @@ function renderBar() {
     ? state.blocked + ' ads and trackers blocked on this page. Click to turn blocking off for this site.'
     : 'Blocking is off for this site. Click to turn it on.';
   $('private').hidden = !state.private;
+  const star = $('star');
+  star.hidden = state.security === 'page';
+  star.firstElementChild.src = state.bookmarked ? 'icons/star-on.svg' : 'icons/star.svg';
+  star.title = state.bookmarked ? 'Remove the bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)';
 
   const route = $('route');
   const names = { direct: 'Direct', tor: 'Tor', proxy: 'Proxy', none: 'Direct' };
@@ -185,5 +189,6 @@ $('reload').addEventListener('click', () => cmd('reload'));
 $('new-tab').addEventListener('click', () => cmd('newTab'));
 $('shield').addEventListener('click', () => cmd('shields'));
 $('route').addEventListener('click', () => cmd('routePage'));
+$('star').addEventListener('click', () => cmd('bookmark'));
 
 cmd('ready').then((s) => { if (s && s.tabs) window.eonState(s); });

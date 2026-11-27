@@ -229,6 +229,10 @@ button {
 .route.proxy { color: var(--current); }
 .route.proxy .route-dot { background: var(--current); }
 
+.star { width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; }
+.star:hover { background: var(--hover); }
+.star[hidden] { display: none; }
+
 .shield {
   height: 32px;
   display: flex;

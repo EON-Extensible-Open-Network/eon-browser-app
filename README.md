@@ -69,7 +69,7 @@ Arti and Servo cannot share one feature-unified build (see `route/Cargo.toml`).
 
 ## Checks
 
-`cargo test`, and `--selftest`: 37 checks through the real engine against pages the
+`cargo test`, and `--selftest`: 40 checks through the real engine against pages the
 browser serves itself — blocking, element hiding, link cleaning, HTTPS-only, the user agent,
 GPC, keyboard (Turkish letters) and wheel input, the bar, the own pages, and that a site
 can neither reach the bar's bridge nor choose your search engine. Emptying the rules makes

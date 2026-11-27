@@ -30,6 +30,8 @@ pub fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
         "/icons/search.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/search.svg"))),
         "/icons/clock.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/clock.svg"))),
         "/icons/url.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/url.svg"))),
+        "/icons/star.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/star.svg"))),
+        "/icons/star-on.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/star-on.svg"))),
         _ => None,
     }
 }
