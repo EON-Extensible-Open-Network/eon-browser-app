@@ -384,7 +384,14 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
     let gpc = s(run.page_eval("String(navigator.globalPrivacyControl)"));
     r.check("Global Privacy Control is on", gpc == "true", &gpc);
     run.settle(300);
-    let blocked = s(run.ui_eval("document.getElementById('blocked').textContent"));
+    let mut blocked = String::new();
+    run.pump_until(
+        || {
+            blocked = s(run.ui_eval("document.getElementById('blocked').textContent"));
+            blocked.parse::<u32>().is_ok_and(|n| n >= 1)
+        },
+        Duration::from_secs(5),
+    );
     r.check(
         "the bar counts what was blocked",
         blocked.parse::<u32>().is_ok_and(|n| n >= 1),

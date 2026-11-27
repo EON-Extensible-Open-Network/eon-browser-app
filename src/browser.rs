@@ -1125,9 +1125,10 @@ impl WebViewDelegate for Browser {
 
     fn notify_load_status_changed(&self, view: WebView, status: LoadStatus) {
         match status {
-            LoadStatus::Started => {
-                self.with_tab(&view, |t| t.blocked.set(0));
-            }
+            // The blocked count is reset by the main-frame request (load_web_resource),
+            // which always precedes the page's own requests; `Started` can arrive after
+            // the first of them were blocked (seen on macOS).
+            LoadStatus::Started | LoadStatus::Stopped => {}
             LoadStatus::HeadParsed => {
                 // Element hiding, first step: the rules written for this site, as early as
                 // the page has a head to put them in. The document's own address, not
@@ -1144,7 +1145,6 @@ impl WebViewDelegate for Browser {
                 }
             }
             LoadStatus::Complete => self.after_load(&view),
-            LoadStatus::Stopped => {}
         }
         self.mark_ui();
     }
@@ -1275,7 +1275,10 @@ impl WebViewDelegate for Browser {
         let url = req.url.clone().into_url();
         let main_frame = req.is_for_main_frame;
         if main_frame {
-            self.with_tab(&view, |t| *t.top.borrow_mut() = Some(url.clone()));
+            self.with_tab(&view, |t| {
+                *t.top.borrow_mut() = Some(url.clone());
+                t.blocked.set(0);
+            });
         }
         match url.host_str() {
             Some(UI_HOST) => return refuse(load),
