@@ -7,6 +7,20 @@ SPDX-FileCopyrightText: 2026 EON contributors
 
 ## v0.0.5 — 28 November 2026
 
+**Familiar first** (the owner's request: easy to get used to). Someone coming from
+Chrome, Edge or Firefox now finds things where they expect them:
+- tabs across the top, with each site's icon, and `+` after the last tab;
+- the menu `⋮` at the right end of the bar (`Alt+F`), with every action and its shortcut,
+  replacing the v0.0.3 sidebar's tool list;
+- *Connection* instead of *Route*;
+- a welcome on the first new tab page saying where things are, which **Got it** hides
+  for good.
+
+Vertical tabs are one menu item away. A stylesheet collision (the layout's `.page` rule
+painted the own-page address icon white) is gone. The self-test has 54 checks (was 49):
+the welcome and Got it, the site's icon in its tab, the menu under its button, a menu item
+running.
+
 **YouTube opens.** It failed with `client error (SendRequest)` because Servo's HTTP
 client keeps hyper's default limit of 16 KiB for an HTTP/2 response's headers. YouTube's
 front page sends more, so the `h2` crate reset the stream itself

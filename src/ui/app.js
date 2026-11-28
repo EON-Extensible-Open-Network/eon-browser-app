@@ -61,29 +61,25 @@ function reportLayout() {
   cmd('layout', { page });
 }
 
+// Tabs across the top (as in every major browser) unless the person chose vertical tabs.
 function setLayout(kind) {
-  const app = $('app');
-  app.classList.toggle('narrow', kind === 'narrow');
-  app.classList.toggle('top', kind === 'top');
-  $('collapse').title = kind === 'narrow' ? 'Widen the sidebar' : 'Narrow the sidebar';
-  $('collapse').setAttribute('aria-label', $('collapse').title);
-  remember('eon.layout', kind);
+  $('app').classList.toggle('vertical', kind === 'vertical');
+  remember('eon.tabs', kind);
   reportLayout();
 }
 
 function layoutKind() {
-  const app = $('app');
-  return app.classList.contains('top') ? 'top' : app.classList.contains('narrow') ? 'narrow' : 'side';
+  return $('app').classList.contains('vertical') ? 'vertical' : 'top';
 }
 
 window.addEventListener('resize', () => { reportLayout(); if (overlayMode === 'suggest') sendSuggestions(); });
 
 // ---- panels ---------------------------------------------------------------------------
 
-const TITLES = { shield: 'Shield', route: 'Route', limits: 'Limiters', monitor: 'Monitor' };
+const TITLES = { shield: 'Shield', route: 'Connection', limits: 'Limiters', monitor: 'Monitor' };
 
 function openPanel(name) {
-  if (name === 'narrow' || name === 'side' || name === 'top') { setLayout(name); return; }
+  if (name === 'vertical' || name === 'top') { setLayout(name); return; }
   if (!TITLES[name]) return;
   if (panel === name) { closePanel(); return; }
   panel = name;
@@ -91,7 +87,6 @@ function openPanel(name) {
   $('app').classList.add('with-panel');
   $('panel-title').textContent = TITLES[name];
   for (const b of document.querySelectorAll('.panel-body')) b.classList.toggle('on', b.dataset.for === name);
-  for (const b of document.querySelectorAll('.tool[data-panel]')) b.classList.toggle('on', b.dataset.panel === name);
   if (state) renderPanel();
   reportLayout();
 }
@@ -100,7 +95,6 @@ function closePanel() {
   panel = null;
   $('panel').hidden = true;
   $('app').classList.remove('with-panel');
-  for (const b of document.querySelectorAll('.tool[data-panel]')) b.classList.remove('on');
   reportLayout();
 }
 
@@ -118,7 +112,14 @@ function renderTabs() {
     tab.setAttribute('aria-selected', String(i === state.active));
     const name = t.title || t.url || 'New tab';
     tab.title = t.asleep ? name + ' (asleep: click to wake it)' : name;
-    tab.appendChild(t.asleep ? icon('moon', 'moon') : el('span', 'dot'));
+    if (t.asleep && !t.icon) tab.appendChild(icon('moon', 'moon'));
+    else if (t.icon && !t.loading) {
+      const fav = document.createElement('img');
+      fav.className = 'fav';
+      fav.src = t.icon;
+      fav.alt = '';
+      tab.appendChild(fav);
+    } else tab.appendChild(el('span', 'dot'));
     tab.appendChild(el('span', 'title', name));
     const x = el('button', 'x');
     x.title = 'Close tab (Ctrl+W)';
@@ -346,8 +347,10 @@ function closeSuggestions() {
   sendSuggestions();
 }
 
+let overlayClosedAt = 0;
 window.eonOverlayClosed = () => {
   overlayMode = 'none';
+  overlayClosedAt = Date.now();
   suggestions = [];
   selected = -1;
 };
@@ -376,7 +379,7 @@ function commands() {
     { title: 'Reload', hint: 'F5', run: { op: 'reload' } },
     { title: state && state.bookmarked ? 'Remove the bookmark' : 'Bookmark this page', hint: 'Ctrl D', run: { op: 'bookmark' } },
     { title: 'Shield: what was blocked', run: { op: 'panel', name: 'shield' }, focus: 'chrome' },
-    { title: 'Route: Direct, Tor, proxy', run: { op: 'panel', name: 'route' }, focus: 'chrome' },
+    { title: 'Connection: Tor and proxy', run: { op: 'panel', name: 'route' }, focus: 'chrome' },
     { title: 'Limiters: memory, network, sleeping tabs', run: { op: 'panel', name: 'limits' }, focus: 'chrome' },
     { title: 'Monitor: memory, processor, network', run: { op: 'panel', name: 'monitor' }, focus: 'chrome' },
     { title: 'Connect through Tor', run: { op: 'setRoute', kind: 'tor', address: '' } },
@@ -387,9 +390,8 @@ function commands() {
     { title: 'Extensions', run: { op: 'open', page: 'extensions' } },
     { title: 'History', hint: 'Ctrl H', run: { op: 'open', page: 'history' } },
     { title: 'Bookmarks', run: { op: 'open', page: 'bookmarks' } },
-    { title: 'Tabs in the sidebar', run: { op: 'panel', name: 'side' } },
-    { title: 'Narrow sidebar', run: { op: 'panel', name: 'narrow' } },
-    { title: 'Tabs across the top', run: { op: 'panel', name: 'top' } },
+    { title: 'Vertical tabs', run: { op: 'panel', name: 'vertical' } },
+    { title: 'Tabs on top', run: { op: 'panel', name: 'top' } },
   ];
   if (state) {
     state.tabs.forEach((t, i) => {
@@ -398,6 +400,47 @@ function commands() {
   }
   return list;
 }
+
+// The main menu, at the right end of the bar as in Chrome, Edge and Firefox: everything,
+// with its shortcut. Drawn by the overlay, above the page.
+function menuItems() {
+  const vertical = layoutKind() === 'vertical';
+  return [
+    { title: 'New tab', hint: 'Ctrl+T', run: { op: 'newTab' }, focus: 'chrome' },
+    { title: 'New private window', hint: 'Ctrl+Shift+N', run: { op: 'privateWindow' } },
+    { sep: true },
+    { title: 'History', hint: 'Ctrl+H', run: { op: 'open', page: 'history' } },
+    { title: 'Bookmarks', run: { op: 'open', page: 'bookmarks' } },
+    { title: 'Extensions', run: { op: 'open', page: 'extensions' } },
+    { sep: true },
+    { title: 'Shield', hint: state && state.shields ? state.blocked + ' blocked' : '', run: { op: 'panel', name: 'shield' }, focus: 'chrome' },
+    { title: 'Connection: Tor and proxy', hint: routeName(), run: { op: 'panel', name: 'route' }, focus: 'chrome' },
+    { title: 'Limiters', run: { op: 'panel', name: 'limits' }, focus: 'chrome' },
+    { title: 'Monitor', run: { op: 'panel', name: 'monitor' }, focus: 'chrome' },
+    { sep: true },
+    { title: 'Zoom in', hint: 'Ctrl++', run: { op: 'zoom', to: 'in' } },
+    { title: 'Zoom out', hint: 'Ctrl+−', run: { op: 'zoom', to: 'out' } },
+    { title: 'Actual size', hint: 'Ctrl+0', run: { op: 'zoom', to: 'reset' } },
+    { sep: true },
+    { title: vertical ? 'Tabs on top' : 'Vertical tabs', run: { op: 'panel', name: vertical ? 'top' : 'vertical' } },
+    { title: 'Command bar', hint: 'Ctrl+K', run: { op: 'palette' } },
+    { title: 'About EON Browser', run: { op: 'open', page: 'about' } },
+  ];
+}
+
+window.eonMenu = () => {
+  if (overlayMode === 'menu' || Date.now() - overlayClosedAt < 300) return;
+  closeSuggestions();
+  const b = $('menu').getBoundingClientRect();
+  const items = menuItems();
+  const rows = items.filter((i) => !i.sep).length;
+  const seps = items.length - rows;
+  const w = 300;
+  const h = Math.min(12 + rows * 34 + seps * 9, window.innerHeight - b.bottom - 12);
+  const area = { x: Math.max(8, b.right - w), y: b.bottom + 4, w, h };
+  overlayMode = 'menu';
+  cmd('overlay', { mode: 'menu', area, items });
+};
 
 window.eonPalette = () => {
   closeSuggestions();
@@ -449,10 +492,8 @@ $('forward').addEventListener('click', () => cmd('forward'));
 $('reload').addEventListener('click', () => cmd('reload'));
 $('new-tab').addEventListener('click', () => cmd('newTab'));
 $('star').addEventListener('click', () => cmd('bookmark'));
-$('palette').addEventListener('click', () => window.eonPalette());
+$('menu').addEventListener('click', () => window.eonMenu());
 $('panel-close').addEventListener('click', closePanel);
-$('private-window').addEventListener('click', () => cmd('privateWindow'));
-$('collapse').addEventListener('click', () => setLayout(layoutKind() === 'narrow' ? 'side' : 'narrow'));
 for (const b of document.querySelectorAll('[data-panel]')) b.addEventListener('click', () => openPanel(b.dataset.panel));
 for (const b of document.querySelectorAll('[data-open]')) b.addEventListener('click', () => cmd('open', { page: b.dataset.open }));
 
@@ -481,6 +522,5 @@ $('m-pause').addEventListener('click', () => {
   $('m-pause').setAttribute('aria-pressed', String(paused));
 });
 
-const saved = recall('eon.layout');
-setLayout(saved === 'narrow' || saved === 'top' ? saved : 'side');
+setLayout(recall('eon.tabs') === 'vertical' ? 'vertical' : 'top');
 cmd('ready').then((s) => { if (s && s.tabs) window.eonState(s); reportLayout(); });

@@ -33,6 +33,8 @@ function icon(name) {
 }
 
 let mode = 'none';
+// The index into `shown` of each row that can be chosen (menus have separators).
+const choosable = () => shown.map((s, i) => (s.sep ? -1 : i)).filter((i) => i >= 0);
 let all = [];
 let shown = [];
 let selected = 0;
@@ -43,6 +45,11 @@ function done(focus) {
 }
 
 async function run(item) {
+  // "Command bar" from the menu: the command bar takes the menu's place.
+  if (item.run && item.run.op === 'palette') {
+    cmd('palette');
+    return;
+  }
   if (mode === 'suggest') {
     done('page');
     cmd('go', { text: item.go });
@@ -62,6 +69,10 @@ function render() {
     return;
   }
   shown.forEach((s, i) => {
+    if (s.sep) {
+      list.appendChild(el('li', 'sep'));
+      return;
+    }
     const li = el('li', i === selected ? 'sel' : '');
     li.setAttribute('role', 'option');
     li.setAttribute('aria-selected', String(i === selected));
@@ -70,9 +81,10 @@ function render() {
       li.appendChild(el('span', 't', s.title));
       li.appendChild(el('span', 'u', s.detail));
     } else {
-      li.appendChild(icon(s.go ? 'search' : 'arrow'));
+      if (mode !== 'menu') li.appendChild(icon(s.go ? 'search' : 'arrow'));
       li.appendChild(el('span', 'u t', s.title));
-      if (s.hint) li.appendChild(el('kbd', '', s.hint));
+      if (s.hint) li.appendChild(el(mode === 'menu' ? 'span' : 'kbd', mode === 'menu' ? 'hint' : '', s.hint));
+      li.setAttribute('role', mode === 'menu' ? 'menuitem' : 'option');
     }
     li.addEventListener('mousedown', (e) => { e.preventDefault(); run(s); });
     list.appendChild(li);
@@ -93,6 +105,8 @@ function filter() {
 window.eonOverlay = (c) => {
   mode = c.mode;
   document.body.classList.toggle('palette', mode === 'palette');
+  document.body.classList.toggle('menu', mode === 'menu');
+  $('list').setAttribute('role', mode === 'menu' ? 'menu' : 'listbox');
   if (mode === 'suggest') {
     all = c.items || [];
     shown = all;
@@ -103,12 +117,18 @@ window.eonOverlay = (c) => {
     $('q').value = '';
     filter();
     $('q').focus();
+  } else if (mode === 'menu') {
+    all = c.items || [];
+    shown = all;
+    selected = choosable()[0] || 0;
+    $('q').blur();
+    render();
   }
 };
 
 $('q').addEventListener('input', filter);
 document.addEventListener('keydown', (e) => {
-  if (mode !== 'palette') return;
+  if (mode !== 'palette' && mode !== 'menu') return;
   if (e.key === 'Escape') {
     e.preventDefault();
     done('page');
@@ -117,8 +137,10 @@ document.addEventListener('keydown', (e) => {
     if (shown[selected]) run(shown[selected]);
   } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
-    const n = shown.length || 1;
-    selected = e.key === 'ArrowDown' ? (selected + 1) % n : (selected - 1 + n) % n;
+    const rows = choosable();
+    const n = rows.length || 1;
+    const at = Math.max(0, rows.indexOf(selected));
+    selected = rows[e.key === 'ArrowDown' ? (at + 1) % n : (at - 1 + n) % n] || 0;
     render();
   }
 });

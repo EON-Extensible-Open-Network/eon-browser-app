@@ -37,6 +37,9 @@ http = "1.4"
 # The monitor (madde 50l): memory and processor of the browser and its route process,
 # read on this computer. Only the process part of the crate.
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
+# Site icons for the tab strip, as PNG (favicon.rs). Already in the tree through Servo at
+# this version with PNG support; named here to use its encoder.
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 # Messages between the interface and the browser.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"

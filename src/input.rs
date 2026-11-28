@@ -101,6 +101,8 @@ pub enum Shortcut {
     History,
     /// The command bar (`Ctrl+K`).
     Palette,
+    /// The main menu (`Alt+F`, `Alt+E`, as in Chrome and Edge).
+    Menu,
 }
 
 /// The shortcut a key press means, if any. Ctrl on Windows and Linux, Cmd on macOS.
@@ -116,6 +118,12 @@ pub fn shortcut(event: &KeyEvent, mods: ModifiersState) -> Option<Shortcut> {
     let shift = mods.shift_key();
     match (&event.logical_key, primary, mods.alt_key(), shift) {
         (WKey::Named(WNamed::F5), false, false, _) => Some(Shortcut::Reload),
+        // Alt alone with F or E (AltGr is Ctrl+Alt, so a Turkish "€" or "@" never matches).
+        (WKey::Character(c), false, true, false)
+            if c.eq_ignore_ascii_case("f") || c.eq_ignore_ascii_case("e") =>
+        {
+            Some(Shortcut::Menu)
+        }
         (WKey::Named(WNamed::F6), false, false, false) => Some(Shortcut::FocusAddress),
         (WKey::Named(WNamed::ArrowLeft), false, true, false)
         | (WKey::Named(WNamed::BrowserBack), ..) => Some(Shortcut::Back),

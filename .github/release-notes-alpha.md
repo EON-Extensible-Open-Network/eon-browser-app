@@ -16,7 +16,10 @@ not a system webview. This is an **early alpha** (plan madde 50).
   Browser does.
 - **Light and in your control** (from v0.0.3): unused tabs go to sleep; a memory limit,
   download and upload limits, and a live monitor of what the browser uses, read on your
-  computer only. Tabs in a sidebar, docked panels, and a command bar (`Ctrl+K`).
+  computer only.
+- **A window you already know** (from v0.0.5): tabs on top with site icons, the menu `⋮` at
+  the right (`Alt+F`), a short welcome the first time; vertical tabs if you prefer them.
+- **YouTube opens** (from v0.0.5); its videos do not play yet (no video support yet).
 
 - **Extensions from other browsers** (from v0.0.2, first stage): install a Chrome `.crx`,
   a Firefox `.xpi` or a folder with `eon-browser --install-extension <file>`; it shows what

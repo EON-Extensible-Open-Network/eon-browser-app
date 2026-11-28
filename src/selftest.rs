@@ -68,6 +68,7 @@ const PNG: &[u8] = &[
 ];
 
 const SITE: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Self-test site</title>
+<link rel="icon" href="https://site.example/logo.png">
 <style>body{font:16px sans-serif;margin:24px;background:#fff;color:#222} .tall{height:3000px}</style></head>
 <body>
 <h1>A page with trackers</h1>
@@ -367,13 +368,34 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
         run.browser.requests.borrow().is_empty(),
         &format!("{:?}", run.browser.requests.borrow()),
     );
+    let hello = s(run.page_eval("String(!!document.querySelector('.hello'))"));
+    r.check(
+        "the first new tab welcomes the person and says where things are",
+        hello == "true",
+        &hello,
+    );
+    let _ = run.page_eval("document.querySelector('.hello .btn').click(); 'clicked'");
+    run.pump_until(
+        || crate::paths::Settings::load(&data).welcomed,
+        Duration::from_secs(5),
+    );
+    run.pump_until(
+        || s(run.page_eval("String(!!document.querySelector('.hello'))")) == "false",
+        Duration::from_secs(5),
+    );
+    let gone = s(run.page_eval("String(!document.querySelector('.hello'))"));
+    r.check(
+        "\"Got it\" hides the welcome for good",
+        crate::paths::Settings::load(&data).welcomed && gone == "true",
+        &gone,
+    );
 
     // --- the window's layout: the interface says where the page goes ----------------
     run.pump_until(|| run.page_area.get().is_some(), Duration::from_secs(5));
     let area = run.page_area.get().unwrap_or_default();
     r.check(
-        "the interface places the page beside the tabs and under the bar",
-        (area.x - 240.0).abs() < 1.0 && (area.y - 48.0).abs() < 1.0 && area.w > 900.0,
+        "the interface places the page under the tabs and the bar, full width",
+        area.x.abs() < 1.0 && (area.y - 88.0).abs() < 1.0 && (area.w - 1280.0).abs() < 1.0,
         &format!("{area:?}"),
     );
 
@@ -397,6 +419,21 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
     r.check("an ad image is blocked", ad == "0", &ad);
     let logo = s(run.page_eval("String(document.getElementById('ok').naturalWidth)"));
     r.check("the site's own image loads", logo == "1", &logo);
+    let mut fav = String::new();
+    run.pump_until(
+        || {
+            fav = s(run.ui_eval(
+                "(()=>{const i=document.querySelector('.tab.active .fav');return i?String(i.naturalWidth):'none'})()",
+            ));
+            fav.parse::<u32>().is_ok_and(|w| w > 0)
+        },
+        Duration::from_secs(10),
+    );
+    r.check(
+        "the tab shows the site's icon",
+        fav.parse::<u32>().is_ok_and(|w| w > 0),
+        &fav,
+    );
     extension_checks(&run, extension.as_deref(), &mut r);
     let slot = s(run.page_eval("getComputedStyle(document.querySelector('.ad-slot')).display"));
     r.check(
@@ -867,6 +904,47 @@ fn window_checks(run: &Run, data: &Path, shots: &Path, r: &mut Report) {
         "cmd('setLimits', { netDownKbps: 0, ramLimitMb: 0, sleepAfterMinutes: 15 }) && 'sent'",
     );
     run.settle(300);
+
+    // The menu (Alt+F): opens under its button, lists everything, and an item runs.
+    run.browser.open_menu();
+    let mut items = String::new();
+    run.pump_until(
+        || {
+            items =
+                s(run
+                    .overlay_eval("String(document.querySelectorAll('li[role=menuitem]').length)"));
+            items.parse::<u32>().is_ok_and(|n| n >= 15) && run.overlay_area.get().is_some()
+        },
+        Duration::from_secs(5),
+    );
+    let at = run.overlay_area.get().unwrap_or_default();
+    // Under the ⋮ button, right edges aligned (a panel may be open, narrowing the bar).
+    let right =
+        s(run.ui_eval("String(document.getElementById('menu').getBoundingClientRect().right)"))
+            .parse::<f64>()
+            .unwrap_or(0.0);
+    r.check(
+        "the menu opens under its button at the right end of the bar, with every action",
+        items.parse::<u32>().is_ok_and(|n| n >= 15)
+            && (at.x + at.w - right).abs() < 2.0
+            && right > 900.0
+            && at.y < 100.0,
+        &format!("{items} items at {at:?}, button's right edge {right}"),
+    );
+    run.settle(300);
+    if let Some(img) = run.browser.overlay_view().and_then(|v| run.screenshot(&v)) {
+        let _ = img.save(shots.join("selftest-menu.png"));
+    }
+    let _ = run.overlay_eval("run(shown.find((s) => s.title === 'History')); 'ran'");
+    let history = run.pump_until(
+        || run.url().ends_with("/history") && run.overlay_area.get().is_none(),
+        Duration::from_secs(5),
+    );
+    r.check(
+        "a menu item runs (History) and the menu closes",
+        history,
+        &run.url(),
+    );
 
     // The command bar: Ctrl+K opens it over the page; typing finds a command; running it
     // opens the panel.

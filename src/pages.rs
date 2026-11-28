@@ -33,6 +33,7 @@ pub fn is_action(path: &str) -> bool {
             | "/ext-remove"
             | "/clear-history"
             | "/unbookmark"
+            | "/welcomed"
     )
 }
 
@@ -87,6 +88,12 @@ ul.facts { list-style: none; padding: 0; margin: 24px 0; }
 ul.facts li { padding: 10px 0; border-top: 1px solid var(--line); color: var(--haze); }
 ul.facts li b { color: var(--mist); font-weight: 600; }
 .warn h1 { color: var(--amber); }
+.hello { background: var(--deck); border: 1px solid var(--line); border-radius: 16px; padding: 22px 22px 20px; margin-bottom: 40px; }
+.hello h2 { margin: 0 0 14px; font-size: 18px; font-weight: 650; }
+.hello .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.hello .cards div { background: var(--ink); border-radius: 12px; padding: 12px 14px; }
+.hello .cards b { display: block; margin-bottom: 4px; }
+.hello .cards span { color: var(--haze); font-size: 13px; line-height: 1.5; }
 "#;
 
 fn page(title: &str, body: &str) -> String {
@@ -105,6 +112,7 @@ pub fn render(
     engines: &[SearchEngine],
     chosen: Option<&str>,
     version: &str,
+    welcomed: bool,
 ) -> Option<String> {
     let q = |name: &str| {
         url.query_pairs()
@@ -113,7 +121,7 @@ pub fn render(
             .unwrap_or_default()
     };
     match url.path() {
-        "/newtab" => Some(newtab(chosen, engines)),
+        "/newtab" => Some(newtab(chosen, engines, welcomed)),
         "/welcome" => Some(welcome(engines, &q("q"))),
         "/blocked" => Some(blocked(&q("url"))),
         "/https-failed" => Some(https_failed(&q("url"))),
@@ -122,7 +130,21 @@ pub fn render(
     }
 }
 
-fn newtab(chosen: Option<&str>, engines: &[SearchEngine]) -> String {
+/// The first-run welcome: where things are, for someone coming from another browser.
+/// One click hides it for good; it never stands in the way.
+const WELCOME: &str = "<section class=\"hello\" aria-label=\"Welcome\">\
+<h2>Welcome to EON Browser</h2>\
+<div class=\"cards\">\
+<div><b>Where you expect it</b><span>Tabs along the top, the address bar below them, and \
+everything else in the menu <kbd>⋮</kbd> at the right (<kbd>Alt F</kbd>).</span></div>\
+<div><b>Ads and trackers blocked</b><span>The green shield beside the address counts what was \
+stopped on the page you are on. Click it to see more, or to turn blocking off for a site.</span></div>\
+<div><b>Tor in one click</b><span>Menu → <i>Connection</i> to hide your address from sites \
+through Tor, Tor Browser's proxy, or a proxy of your own.</span></div>\
+</div>\
+<a class=\"btn\" href=\"/welcomed\">Got it</a></section>";
+
+fn newtab(chosen: Option<&str>, engines: &[SearchEngine], welcomed: bool) -> String {
     let engine = chosen
         .and_then(|id| engines.iter().find(|e| e.id == id))
         .map_or_else(
@@ -137,13 +159,14 @@ fn newtab(chosen: Option<&str>, engines: &[SearchEngine]) -> String {
     page(
         "New tab",
         &format!(
-            "{MARK}<h1>New tab</h1><p>Type in the bar above to search or to go to an address. <kbd>Ctrl K</kbd> finds every command.</p>\
+            "{hello}{MARK}<h1>New tab</h1><p>Type in the bar above to search or to go to an address. <kbd>Ctrl K</kbd> finds every command.</p>\
              <p>{engine}</p>\
              <ul class=\"facts\">\
              <li><b>Nothing is sent anywhere</b> until you open a page: no telemetry, no suggestions while you type.</li>\
              <li><b>Ads and trackers are blocked</b> by EasyList, EasyPrivacy and uBlock Origin's lists.</li>\
              <li><b>Tracking parameters are removed</b> from links, and every site is opened over HTTPS.</li>\
-             </ul><p><a href=\"/about\">About EON Browser</a></p>"
+             </ul><p><a href=\"/about\">About EON Browser</a></p>",
+            hello = if welcomed { "" } else { WELCOME },
         ),
     )
 }
@@ -479,14 +502,23 @@ mod tests {
     #[test]
     fn pages_escape_what_they_show() {
         let u = url("/blocked?url=%3Cscript%3Ealert(1)%3C%2Fscript%3E");
-        let html = render(&u, &[], None, "0").unwrap_or_default();
+        let html = render(&u, &[], None, "0", false).unwrap_or_default();
         assert!(!html.contains("<script>alert"), "{html}");
         assert!(html.contains("&lt;script&gt;"));
     }
 
     #[test]
+    fn the_welcome_shows_until_dismissed() {
+        let first = render(&url("/newtab"), &[], None, "0", false).unwrap_or_default();
+        let later = render(&url("/newtab"), &[], None, "0", true).unwrap_or_default();
+        assert!(first.contains("Welcome to EON Browser") && first.contains("href=\"/welcomed\""));
+        assert!(!later.contains("Welcome to EON Browser"));
+        assert!(is_action("/welcomed"));
+    }
+
+    #[test]
     fn unknown_pages_and_actions() {
-        assert!(render(&url("/nope"), &[], None, "0").is_none());
+        assert!(render(&url("/nope"), &[], None, "0", false).is_none());
         assert!(is_action("/choose") && is_action("/allow-http") && !is_action("/welcome"));
     }
 
@@ -500,7 +532,7 @@ mod tests {
     #[test]
     fn welcome_lists_every_engine() {
         let engines = eon_browser_core::search::catalogue();
-        let html = render(&url("/welcome?q=rust"), &engines, None, "0").unwrap_or_default();
+        let html = render(&url("/welcome?q=rust"), &engines, None, "0", false).unwrap_or_default();
         for e in &engines {
             assert!(html.contains(&format!("engine={}", e.id)), "{}", e.id);
         }

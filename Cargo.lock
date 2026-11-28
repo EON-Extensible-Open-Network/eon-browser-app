@@ -2504,6 +2504,7 @@ dependencies = [
  "eon-browser-core",
  "euclid",
  "http",
+ "image",
  "rustls",
  "serde",
  "serde_json",

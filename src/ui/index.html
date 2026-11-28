@@ -3,11 +3,12 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 SPDX-FileCopyrightText: 2026 EON contributors
 
-EON Browser's window (eon-docs/browser/design.md, v0.0.3): vertical tabs, one bar, docked
-panels. Servo draws the page into the empty #page area, whose place this file reports to
-the browser. Suggestions and the command bar live in overlay.html, above the page. This
-page talks to the browser only through https://ui.eon.invalid/cmd and is handed only what
-a person reads: titles, addresses, counts. (madde 50)
+EON Browser's window (eon-docs/browser/design.md, v0.0.5 "familiar first"): tabs across
+the top, the bar below them, the menu at the right end of the bar, docked panels. Servo
+draws the page into the empty #page area, whose place this file reports to the browser;
+the menu, suggestions and the command bar live in overlay.html, above the page. This page
+talks to the browser only through https://ui.eon.invalid/cmd and is handed only what a
+person reads: titles, addresses, counts. (madde 50)
 -->
 <html lang="en">
 <head>
@@ -17,25 +18,13 @@ a person reads: titles, addresses, counts. (madde 50)
 </head>
 <body>
   <div class="app" id="app">
-    <aside class="side" id="side" aria-label="Tabs and tools">
-      <div class="side-head">
-        <button class="new-tab" id="new-tab" title="New tab (Ctrl+T)" aria-label="New tab">
-          <img src="icons/plus.svg" alt=""><span class="label">New tab</span><kbd>Ctrl T</kbd>
-        </button>
-      </div>
+    <div class="strip" id="strip">
       <div class="tabs" id="tabs" role="tablist" aria-label="Tabs"></div>
-      <nav class="tools" aria-label="Tools">
-        <button class="tool" data-panel="shield" title="Shield: what was blocked" aria-label="Shield"><img src="icons/shield.svg" alt=""><span class="label">Shield</span></button>
-        <button class="tool" data-panel="route" title="Route: Direct, Tor, proxy" aria-label="Route"><img src="icons/route.svg" alt=""><span class="label">Route</span></button>
-        <button class="tool" data-panel="limits" title="Limiters: memory, network, sleeping tabs" aria-label="Limiters"><img src="icons/gauge.svg" alt=""><span class="label">Limiters</span></button>
-        <button class="tool" data-panel="monitor" title="Monitor: memory, processor, network" aria-label="Monitor"><img src="icons/activity.svg" alt=""><span class="label">Monitor</span></button>
-        <button class="tool" data-open="extensions" title="Extensions" aria-label="Extensions"><img src="icons/puzzle.svg" alt=""><span class="label">Extensions</span></button>
-        <button class="tool" data-open="history" title="History (Ctrl+H)" aria-label="History"><img src="icons/clock.svg" alt=""><span class="label">History</span></button>
-        <button class="tool" data-open="bookmarks" title="Bookmarks" aria-label="Bookmarks"><img src="icons/star.svg" alt=""><span class="label">Bookmarks</span></button>
-        <button class="tool" id="private-window" title="New private window (Ctrl+Shift+N)" aria-label="New private window"><img src="icons/mask.svg" alt=""><span class="label">Private window</span></button>
-        <button class="tool" id="collapse" title="Narrow the sidebar" aria-label="Narrow the sidebar"><img src="icons/sidebar.svg" alt=""><span class="label">Narrow sidebar</span></button>
-      </nav>
-    </aside>
+      <button class="new-tab" id="new-tab" title="New tab (Ctrl+T)" aria-label="New tab">
+        <img src="icons/plus.svg" alt=""><span class="label">New tab</span>
+      </button>
+      <div class="private-badge" id="private" hidden>Private</div>
+    </div>
 
     <header class="bar">
       <button class="icon" id="back" title="Back (Alt+Left)" aria-label="Back"><img src="icons/back.svg" alt=""></button>
@@ -50,17 +39,16 @@ a person reads: titles, addresses, counts. (madde 50)
           <img src="icons/star.svg" alt="">
         </button>
       </div>
-      <button class="route" id="route" data-panel="route" title="How EON Browser reaches the web" aria-label="Route">
-        <span class="route-dot"></span><span id="route-name">Direct</span>
-      </button>
       <button class="shield" id="shield" data-panel="shield" title="" aria-label="Blocked on this page">
         <img src="icons/shield.svg" alt=""><span id="blocked">0</span>
       </button>
-      <button class="icon" id="palette" title="Command bar (Ctrl+K)" aria-label="Command bar"><img src="icons/command.svg" alt=""></button>
-      <div class="private-badge" id="private" hidden>Private</div>
+      <button class="route" id="route" data-panel="route" title="How EON Browser connects" aria-label="Connection">
+        <span class="route-dot"></span><span id="route-name">Direct</span>
+      </button>
+      <button class="icon menu-button" id="menu" title="Menu (Alt+F)" aria-label="Menu" aria-haspopup="menu"><img src="icons/menu.svg" alt=""></button>
     </header>
 
-    <main class="page" id="page" aria-hidden="true"></main>
+    <main class="page-area" id="page" aria-hidden="true"></main>
 
     <section class="panel" id="panel" hidden>
       <div class="panel-head">
@@ -84,7 +72,7 @@ a person reads: titles, addresses, counts. (madde 50)
       <div class="panel-body" data-for="route">
         <p class="lede">How your connections reach the web. Tor hides your address from the sites you
           visit; it does not make this browser as hard to recognise as Tor Browser.</p>
-        <div class="choices" role="radiogroup" aria-label="Route">
+        <div class="choices" role="radiogroup" aria-label="Connection">
           <button class="choice" data-kind="direct" data-address="" role="radio" aria-checked="false"><b>Direct</b><small>Straight to each site.</small></button>
           <button class="choice" data-kind="tor" data-address="" role="radio" aria-checked="false"><b>Tor, built in</b><small>A separate circuit for each site, renewed every ten minutes. Opens .onion addresses.</small></button>
           <button class="choice" data-kind="socks" data-address="socks5://127.0.0.1:9150" role="radio" aria-checked="false"><b>Tor Browser's proxy</b><small>Through Tor Browser while it is open (127.0.0.1:9150).</small></button>
@@ -123,7 +111,7 @@ a person reads: titles, addresses, counts. (madde 50)
         <button class="btn quiet" id="m-pause" aria-pressed="false">Pause</button>
         <h3>Tabs</h3>
         <ul class="tab-list" id="m-tabs"></ul>
-        <p class="small">Read on this computer every two seconds: the browser and its route
+        <p class="small">Read on this computer every two seconds: the browser and its connection
           process together. Nothing is sent anywhere.</p>
       </div>
     </section>

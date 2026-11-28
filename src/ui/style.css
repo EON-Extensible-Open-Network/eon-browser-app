@@ -54,72 +54,71 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: def
 button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--pulse); outline-offset: 1px; }
 kbd { font: 11px "Geist", sans-serif; color: var(--dim); padding: 1px 5px; border: 1px solid var(--line); border-radius: 5px; }
 
-/* ---- layout: sidebar | bar over page | panel --------------------------------------- */
+/* ---- layout: the strip of tabs, the bar, the page (and a panel beside it) ---------- */
 
 .app {
   display: grid;
   height: 100%;
-  grid-template-columns: var(--side) minmax(0, 1fr);
-  grid-template-rows: var(--bar) minmax(0, 1fr);
-  grid-template-areas: "side bar" "side page";
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: var(--strip) var(--bar) minmax(0, 1fr);
+  grid-template-areas: "strip" "bar" "page";
 }
 .app.with-panel {
-  grid-template-columns: var(--side) minmax(0, 1fr) var(--panel);
-  grid-template-areas: "side bar panel" "side page panel";
+  grid-template-columns: minmax(0, 1fr) var(--panel);
+  grid-template-areas: "strip strip" "bar panel" "page panel";
 }
-.app.narrow { --side: 56px; }
+/* Vertical tabs, chosen from the menu. */
+.app.vertical {
+  grid-template-columns: var(--side) minmax(0, 1fr);
+  grid-template-rows: var(--bar) minmax(0, 1fr);
+  grid-template-areas: "strip bar" "strip page";
+}
+.app.vertical.with-panel {
+  grid-template-columns: var(--side) minmax(0, 1fr) var(--panel);
+  grid-template-areas: "strip bar panel" "strip page panel";
+}
 
-/* Tabs across the top instead (the command bar has "Tabs across the top"). */
-.app.top { grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--strip) var(--bar) minmax(0, 1fr); grid-template-areas: "side" "bar" "page"; }
-.app.top.with-panel { grid-template-columns: minmax(0, 1fr) var(--panel); grid-template-areas: "side side" "bar panel" "page panel"; }
-
-.side { grid-area: side; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
+.strip { grid-area: strip; display: flex; align-items: flex-end; gap: 2px; padding: 0 8px; min-width: 0; min-height: 0; }
 .bar { grid-area: bar; display: flex; align-items: center; gap: 4px; padding: 0 8px; background: var(--deck); min-width: 0; }
-.page { grid-area: page; background: #fff; }
+.page-area { grid-area: page; background: #fff; }
 .panel { grid-area: panel; background: var(--deck); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .panel[hidden] { display: none; }
 
-/* ---- sidebar ------------------------------------------------------------------------ */
+/* ---- tabs ----------------------------------------------------------------------------- */
 
-.side-head { padding: 8px; }
-.new-tab {
-  width: 100%; height: 36px; display: flex; align-items: center; gap: 10px; padding: 0 10px;
-  border-radius: 9px; color: var(--haze); border: 1px dashed var(--line);
-}
-.new-tab:hover { background: var(--hover); color: var(--mist); }
-.new-tab .label { flex: 1; text-align: left; }
-
-.tabs { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px; display: flex; flex-direction: column; gap: 2px; }
+.tabs { display: flex; gap: 2px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
 .tab {
-  display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 4px 0 10px;
-  border-radius: 9px; color: var(--haze); flex: none;
+  display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 4px 0 12px;
+  width: 220px; min-width: 72px; flex: 0 1 220px;
+  border-radius: 10px 10px 0 0; color: var(--haze);
 }
 .tab:hover { background: var(--hover); color: var(--mist); }
-.tab.active { background: var(--selected); color: var(--mist); }
-.tab .dot { width: 8px; height: 8px; margin: 0 3px; border-radius: 50%; background: var(--line); flex: none; }
+.tab.active { background: var(--deck); color: var(--mist); }
+.tab .fav { width: 16px; height: 16px; flex: none; }
+.tab .dot { width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: var(--line); flex: none; }
 .tab.active .dot { background: var(--pulse); }
 .tab.loading .dot { background: var(--current); }
-.tab .moon { width: 14px; height: 14px; }
+.tab .moon { width: 14px; height: 14px; margin: 0 1px; }
 .tab.asleep { color: var(--dim); }
+.tab.asleep .fav { opacity: 0.5; }
 .tab .title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab .x { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex: none; }
 .tab .x img { width: 14px; height: 14px; }
 .tab .x:hover { background: var(--selected); }
 
-.tools { padding: 8px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; }
-.tool { height: 34px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 9px; color: var(--haze); text-align: left; }
-.tool:hover { background: var(--hover); color: var(--mist); }
-.tool.on { background: var(--selected); color: var(--mist); }
+.new-tab { width: 32px; height: 30px; margin-bottom: 2px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex: none; }
+.new-tab:hover { background: var(--hover); }
+.new-tab .label { display: none; }
+.private-badge { margin: 0 0 6px auto; padding: 3px 10px; border-radius: 99px; background: var(--selected); color: var(--pulse); font-weight: 600; flex: none; }
 
-.app.narrow .label, .app.narrow .new-tab kbd, .app.narrow .tab .title, .app.narrow .tab .x { display: none; }
-.app.narrow .tab, .app.narrow .tool, .app.narrow .new-tab { justify-content: center; padding: 0; }
-
-.app.top .side { flex-direction: row; align-items: center; border-right: 0; padding-right: 8px; }
-.app.top .side-head { padding: 0 4px 0 8px; order: 2; }
-.app.top .new-tab { width: 32px; height: 30px; padding: 0; justify-content: center; border: 0; }
-.app.top .new-tab .label, .app.top .new-tab kbd, .app.top .tools { display: none; }
-.app.top .tabs { flex: 0 1 auto; flex-direction: row; overflow: hidden; padding: 0 0 0 8px; }
-.app.top .tab { width: 200px; min-width: 64px; flex: 0 1 200px; height: 32px; }
+/* Vertical: the strip becomes a sidebar, "New tab" on top. */
+.app.vertical .strip { flex-direction: column; align-items: stretch; padding: 8px; gap: 2px; border-right: 1px solid var(--line); }
+.app.vertical .new-tab { order: -1; width: 100%; height: 36px; margin: 0 0 6px; justify-content: flex-start; gap: 10px; padding: 0 10px; border: 1px dashed var(--line); color: var(--haze); }
+.app.vertical .new-tab .label { display: inline; }
+.app.vertical .tabs { flex: 1; flex-direction: column; overflow-y: auto; }
+.app.vertical .tab { width: auto; flex: none; height: 36px; border-radius: 9px; padding-left: 10px; }
+.app.vertical .tab.active { background: var(--selected); }
+.app.vertical .private-badge { margin: 8px 0 0; align-self: flex-start; }
 
 /* ---- bar ---------------------------------------------------------------------------- */
 
@@ -153,7 +152,6 @@ kbd { font: 11px "Geist", sans-serif; color: var(--dim); padding: 1px 5px; borde
 .shield { height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 8px; color: var(--mint); font-variant-numeric: tabular-nums; font-weight: 600; flex: none; }
 .shield:hover { background: var(--hover); }
 .shield.off { color: var(--dim); }
-.private-badge { padding: 3px 10px; border-radius: 99px; background: var(--selected); color: var(--pulse); font-weight: 600; flex: none; }
 
 /* ---- panels --------------------------------------------------------------------------- */
 

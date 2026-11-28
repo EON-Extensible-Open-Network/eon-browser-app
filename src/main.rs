@@ -15,6 +15,7 @@
 mod browser;
 mod engine;
 mod extensions;
+mod favicon;
 mod input;
 mod monitor;
 mod pages;

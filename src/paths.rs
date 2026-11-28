@@ -41,6 +41,8 @@ pub struct Settings {
     /// Opera GX's network limiter, KiB/s down and up. 0 is no limit.
     pub net_down_kbps: u32,
     pub net_up_kbps: u32,
+    /// The first-run welcome on the new tab page was dismissed ("Got it").
+    pub welcomed: bool,
 }
 
 impl Settings {

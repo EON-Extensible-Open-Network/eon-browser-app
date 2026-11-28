@@ -9,7 +9,7 @@ A web browser on **Servo**, the open engine written in Rust — not Chromium, no
 webview (plan madde 50). Blocking built in, no telemetry, no AI, and no request at all
 until you open a page. Windows, Linux and macOS. **Early alpha.**
 
-![EON Browser v0.0.3: tabs in the sidebar, the bar, the page](docs/window.png)
+![EON Browser v0.0.5: tabs on top, the bar, the menu at the right](docs/window.png)
 
 ## What it does
 
@@ -38,9 +38,11 @@ until you open a page. Windows, Linux and macOS. **Early alpha.**
   longest ago sleep first), download and upload limits for all connections, and a live
   monitor of the browser's memory, processor and network use — read on your computer,
   sent nowhere.
-- **The window**: tabs in a sidebar (narrow, or across the top if you prefer), one bar,
-  docked panels (Shield, Route, Limiters, Monitor) that narrow the page instead of covering
-  it, and a command bar (`Ctrl+K`) that finds every action.
+- **A window you already know**: tabs across the top with each site's icon, the address
+  bar below them, the menu `⋮` at the right (`Alt+F`) with every action and its shortcut,
+  a short welcome the first time. Vertical tabs are one menu item away; docked panels
+  (Shield, Connection, Limiters, Monitor) narrow the page instead of covering it; a
+  command bar (`Ctrl+K`) finds every action.
 
 - **Extensions from Chrome, Edge, Opera and Firefox**, stage 1:
   `eon-browser --install-extension <file.crx | file.xpi | folder>` shows what the extension
@@ -81,11 +83,12 @@ Arti and Servo cannot share one feature-unified build (see `route/Cargo.toml`).
 
 ## Checks
 
-`cargo test`, and `--selftest`: 49 checks through the real engine against pages the
+`cargo test`, and `--selftest`: 54 checks through the real engine against pages the
 browser serves itself — blocking, element hiding, link cleaning, HTTPS-only, the user agent,
 GPC, keyboard (Turkish letters) and wheel input, the bar, the own pages, that a site
 can neither reach the bar's bridge nor choose your search engine, the route through a
-SOCKS5 proxy, sleeping tabs, the limiters, the monitor and the command bar. Emptying the rules makes
+SOCKS5 proxy, sleeping tabs, the limiters, the monitor, the menu, the command bar and the
+first-run welcome. Emptying the rules makes
 six of them fail, as they should.
 
 ## Licence

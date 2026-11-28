@@ -109,6 +109,8 @@ struct Tab {
     /// requests are already out (seen on macOS), and a request must never be judged
     /// against the wrong page.
     top: RefCell<Option<Url>>,
+    /// The site's icon, as a key into `Browser::favicons`. Kept while the tab sleeps.
+    favicon: Cell<Option<u64>>,
 }
 
 impl Tab {
@@ -161,6 +163,10 @@ pub struct Browser {
     ui_dirty: Cell<bool>,
     route: Option<std::sync::Arc<crate::route_client::RouteClient>>,
     rules_override: Option<String>,
+    /// Site icons for the tab strip as PNG, served to the interface at
+    /// `ui.eon.invalid/favicon/<key>.png`; the key changes with the icon.
+    favicons: RefCell<std::collections::HashMap<u64, Vec<u8>>>,
+    next_favicon: Cell<u64>,
     monitor: RefCell<crate::monitor::Monitor>,
     sample: Cell<crate::monitor::Sample>,
     last_housekeeping: Cell<std::time::Instant>,
@@ -274,6 +280,8 @@ impl Browser {
             shield: RefCell::new(build_shield(&options.data, options.rules.as_deref())),
             extensions: RefCell::new(crate::extensions::Extensions::load(&options.data)),
             rules_override: options.rules.clone(),
+            favicons: RefCell::new(std::collections::HashMap::new()),
+            next_favicon: Cell::new(1),
             monitor: RefCell::new(crate::monitor::Monitor::default()),
             sample: Cell::new(crate::monitor::Sample::default()),
             last_housekeeping: Cell::new(std::time::Instant::now()),
@@ -355,6 +363,36 @@ impl Browser {
         if let Some(ui) = self.chrome_view() {
             ui.evaluate_javascript("window.eonOverlayClosed && eonOverlayClosed()", |_| {});
         }
+    }
+
+    /// Ask the interface to open the main menu (`Alt+F`).
+    pub fn open_menu(&self) {
+        if let Some(ui) = self.chrome_view() {
+            ui.evaluate_javascript("window.eonMenu && eonMenu()", |_| {});
+        }
+    }
+
+    /// A site icon for the interface, PNG, by key.
+    pub fn favicon_png(&self, key: u64) -> Option<Vec<u8>> {
+        self.favicons.borrow().get(&key).cloned()
+    }
+
+    /// The page's icon changed: keep a small PNG of it for the tab strip.
+    fn set_favicon(&self, view: &WebView) {
+        let png = view.favicon().and_then(|img| crate::favicon::to_png(&img));
+        let Some(png) = png else { return };
+        let key = self.next_favicon.get();
+        self.next_favicon.set(key + 1);
+        let old = self
+            .with_tab(view, |t| t.favicon.replace(Some(key)))
+            .flatten();
+        let mut icons = self.favicons.borrow_mut();
+        if let Some(old) = old {
+            icons.remove(&old);
+        }
+        icons.insert(key, png);
+        drop(icons);
+        self.mark_ui();
     }
 
     /// Ask the interface to open the command bar (`Ctrl+K`).
@@ -563,6 +601,7 @@ impl Browser {
                 note: RefCell::new(None),
                 allow_once: RefCell::new(None),
                 top: RefCell::new(None),
+                favicon: Cell::new(None),
             });
             tabs.len() - 1
         };
@@ -612,6 +651,9 @@ impl Browser {
             let mut tabs = self.tabs.borrow_mut();
             (index < tabs.len()).then(|| tabs.remove(index))
         };
+        if let Some(key) = removed.as_ref().and_then(|t| t.favicon.get()) {
+            self.favicons.borrow_mut().remove(&key);
+        }
         drop(removed);
         let n = self.tab_count();
         if n == 0 {
@@ -709,6 +751,7 @@ impl Browser {
             Shortcut::NewIdentity => self.new_identity(),
             Shortcut::Bookmark => self.toggle_bookmark(),
             Shortcut::Palette => self.open_palette(),
+            Shortcut::Menu => self.open_menu(),
             Shortcut::History => self.new_tab(pages::url("/history"), true),
         }
     }
@@ -857,6 +900,7 @@ impl Browser {
                         .view()
                         .is_some_and(|v| v.load_status() != LoadStatus::Complete),
                     asleep: t.asleep(),
+                    icon: t.favicon.get().map(|k| format!("favicon/{k}.png")),
                 })
                 .collect(),
             active,
@@ -1041,6 +1085,13 @@ impl Browser {
                 let _ = self.profile.clear_history(since);
                 view.load(pages::url("/history"));
             }
+            "/welcomed" => {
+                self.settings.borrow_mut().welcomed = true;
+                if !self.private {
+                    let _ = self.settings.borrow().save(&self.data);
+                }
+                view.load(pages::url("/newtab"));
+            }
             "/unbookmark" => {
                 if let Ok(id) = q("id").parse::<i64>() {
                     let _ = self.profile.remove_bookmark(id);
@@ -1194,7 +1245,8 @@ impl Browser {
             return;
         }
         let chosen = self.settings.borrow().search_engine.clone();
-        match pages::render(url, &self.engines, chosen.as_deref(), VERSION) {
+        let welcomed = self.settings.borrow().welcomed;
+        match pages::render(url, &self.engines, chosen.as_deref(), VERSION, welcomed) {
             Some(html) => respond(
                 load,
                 StatusCode::OK,
@@ -1270,7 +1322,7 @@ impl Browser {
                         .borrow_mut()
                         .push((o, format!("window.eonOverlay && eonOverlay({json})")));
                 }
-                if mode == "palette" {
+                if mode == "palette" || mode == "menu" {
                     self.host.focus_overlay();
                 }
                 return serde_json::json!({ "ok": true });
@@ -1308,6 +1360,12 @@ impl Browser {
                 }
             }
             "privateWindow" => self.host.open_private_window(),
+            "palette" => self.open_palette(),
+            "zoom" => match c.get("to").and_then(serde_json::Value::as_str) {
+                Some("in") => self.shortcut(Shortcut::ZoomIn),
+                Some("out") => self.shortcut(Shortcut::ZoomOut),
+                _ => self.shortcut(Shortcut::ZoomReset),
+            },
             "focusPage" => self.host.focus_page(),
             "routePage" => self.new_tab(pages::url("/route"), true),
             "bookmark" => self.toggle_bookmark(),
@@ -1416,6 +1474,8 @@ struct UiTab {
     url: String,
     loading: bool,
     asleep: bool,
+    /// The site's icon, a path under the interface's own host.
+    icon: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1461,6 +1521,10 @@ struct UiSuggestion {
 }
 
 impl WebViewDelegate for Browser {
+    fn notify_favicon_changed(&self, view: WebView) {
+        self.set_favicon(&view);
+    }
+
     fn notify_new_frame_ready(&self, view: WebView) {
         if self.active_view().is_some_and(|a| a.id() == view.id()) {
             self.host.redraw();
@@ -1723,6 +1787,17 @@ impl WebViewDelegate for Chrome {
         let url = load.request().url.clone().into_url();
         if url.host_str() != Some(UI_HOST) {
             return refuse(load);
+        }
+        if let Some(key) = url
+            .path()
+            .strip_prefix("/favicon/")
+            .and_then(|k| k.strip_suffix(".png"))
+            .and_then(|k| k.parse::<u64>().ok())
+        {
+            return match self.browser.upgrade().and_then(|b| b.favicon_png(key)) {
+                Some(png) => respond(load, StatusCode::OK, "image/png", png),
+                None => respond(load, StatusCode::NOT_FOUND, "text/plain", Vec::new()),
+            };
         }
         if url.path() == "/cmd" {
             let Some(b) = self.browser.upgrade() else {
