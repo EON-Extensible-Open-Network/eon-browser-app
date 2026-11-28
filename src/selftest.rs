@@ -832,14 +832,28 @@ fn window_checks(run: &Run, data: &Path, shots: &Path, r: &mut Report) {
         &format!("{ram} MB"),
     );
 
-    // The limiters are kept.
-    let _ = run.ui_eval(
-        "cmd('setLimits', { netDownKbps: 256, ramLimitMb: 2048, sleepAfterMinutes: 30 }) && 'sent'",
-    );
+    // The limiters, set by clicking their buttons in the panel, are kept.
+    let _ = run.ui_eval("openPanel('limits'); 'open'");
+    for (key, v) in [
+        ("netDownKbps", 256),
+        ("ramLimitMb", 2048),
+        ("sleepAfterMinutes", 30),
+    ] {
+        let _ = run.ui_eval(&format!(
+            "document.querySelector('.seg[data-key=\"{key}\"] [data-v=\"{v}\"]').click(); 'clicked'"
+        ));
+    }
     run.pump_until(
-        || crate::paths::Settings::load(data).net_down_kbps == 256,
+        || {
+            let st = crate::paths::Settings::load(data);
+            st.net_down_kbps == 256 && st.sleep_after_minutes == Some(30)
+        },
         Duration::from_secs(5),
     );
+    run.settle(2500);
+    if let Some(img) = run.browser.chrome_view().and_then(|v| run.screenshot(&v)) {
+        let _ = img.save(shots.join("selftest-limits.png"));
+    }
     let st = crate::paths::Settings::load(data);
     r.check(
         "the network, memory and sleep limits are kept",

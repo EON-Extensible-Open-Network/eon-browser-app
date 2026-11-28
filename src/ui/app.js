@@ -195,15 +195,20 @@ function memory(mb) {
   return mb >= 1024 ? (mb / 1024).toFixed(2) + ' GB' : mb + ' MB';
 }
 
-function choose(select, value) {
+// Mark the button for `value` in a segmented choice; a value set elsewhere gets its own.
+function choose(key, value) {
+  const group = document.querySelector('.seg[data-key="' + key + '"]');
+  if (!group) return;
   const v = String(value);
-  if (![...select.options].some((o) => o.value === v)) {
-    const o = el('option', '', select.id === 'l-sleep' ? 'After ' + v + ' min'
-      : select.id === 'l-ram' ? memory(value) : speed(value));
-    o.value = v;
-    select.appendChild(o);
+  if (![...group.children].some((b) => b.dataset.v === v)) {
+    const b = el('button', '', key === 'sleepAfterMinutes' ? v + ' min'
+      : key === 'ramLimitMb' ? memory(value) : speed(value));
+    b.dataset.v = v;
+    b.setAttribute('role', 'radio');
+    b.addEventListener('click', () => cmd('setLimits', { [key]: Number(v) }));
+    group.appendChild(b);
   }
-  if (document.activeElement !== select) select.value = v;
+  for (const b of group.children) b.setAttribute('aria-checked', String(b.dataset.v === v));
 }
 
 const history = { ram: [], cpu: [], down: [], up: [] };
@@ -272,10 +277,10 @@ function renderPanel() {
     $('new-identity').hidden = !(state.route === 'tor' || state.route === 'socks');
   } else if (panel === 'limits') {
     const l = state.limits;
-    choose($('l-sleep'), l.sleepAfterMinutes);
-    choose($('l-ram'), l.ramLimitMb);
-    choose($('l-down'), l.netDownKbps);
-    choose($('l-up'), l.netUpKbps);
+    choose('sleepAfterMinutes', l.sleepAfterMinutes);
+    choose('ramLimitMb', l.ramLimitMb);
+    choose('netDownKbps', l.netDownKbps);
+    choose('netUpKbps', l.netUpKbps);
   } else if (panel === 'monitor') {
     const m = state.monitor;
     if (!paused) {
@@ -464,8 +469,10 @@ $('own-proxy').addEventListener('submit', (e) => {
   cmd('setRoute', { kind: m[1] === 'http' ? 'proxy' : 'socks', address: v });
 });
 $('new-identity').addEventListener('click', () => cmd('newIdentity'));
-for (const s of document.querySelectorAll('select[data-key]')) {
-  s.addEventListener('change', () => cmd('setLimits', { [s.dataset.key]: Number(s.value) }));
+for (const g of document.querySelectorAll('.seg')) {
+  for (const b of g.children) {
+    b.addEventListener('click', () => cmd('setLimits', { [g.dataset.key]: Number(b.dataset.v) }));
+  }
 }
 $('sleep-others').addEventListener('click', () => cmd('sleepOthers'));
 $('m-pause').addEventListener('click', () => {

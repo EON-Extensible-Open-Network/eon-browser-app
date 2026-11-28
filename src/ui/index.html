@@ -100,27 +100,16 @@ a person reads: titles, addresses, counts. (madde 50)
       </div>
 
       <div class="panel-body" data-for="limits">
+        <!-- Buttons, not <select>: Servo 0.8 has no drop-down list popups yet. -->
         <p class="lede">Keep EON Browser as light as you want it.</p>
-        <label class="field-row"><span><b>Sleeping tabs</b><small>A tab you have not looked at for a while is unloaded. Click it and it comes back.</small></span>
-          <select id="l-sleep" data-key="sleepAfterMinutes">
-            <option value="0">Never</option><option value="5">After 5 min</option><option value="15">After 15 min</option>
-            <option value="30">After 30 min</option><option value="60">After 1 hour</option>
-          </select></label>
-        <label class="field-row"><span><b>Memory limit</b><small>Past this, the tabs used longest ago go to sleep first.</small></span>
-          <select id="l-ram" data-key="ramLimitMb">
-            <option value="0">No limit</option><option value="512">512 MB</option><option value="1024">1 GB</option>
-            <option value="2048">2 GB</option><option value="4096">4 GB</option>
-          </select></label>
-        <label class="field-row"><span><b>Download limit</b><small>All connections together.</small></span>
-          <select id="l-down" data-key="netDownKbps">
-            <option value="0">No limit</option><option value="256">256 KB/s</option><option value="1024">1 MB/s</option>
-            <option value="5120">5 MB/s</option><option value="10240">10 MB/s</option>
-          </select></label>
-        <label class="field-row"><span><b>Upload limit</b><small>All connections together.</small></span>
-          <select id="l-up" data-key="netUpKbps">
-            <option value="0">No limit</option><option value="128">128 KB/s</option><option value="512">512 KB/s</option>
-            <option value="1024">1 MB/s</option><option value="5120">5 MB/s</option>
-          </select></label>
+        <div class="limit"><b>Sleeping tabs</b><small>A tab you have not looked at for a while is unloaded. Click it and it comes back.</small>
+          <div class="seg" data-key="sleepAfterMinutes" role="radiogroup" aria-label="Sleeping tabs"><button data-v="0" role="radio" aria-checked="false">Never</button><button data-v="5" role="radio" aria-checked="false">5 min</button><button data-v="15" role="radio" aria-checked="false">15 min</button><button data-v="30" role="radio" aria-checked="false">30 min</button><button data-v="60" role="radio" aria-checked="false">1 hour</button></div></div>
+        <div class="limit"><b>Memory limit</b><small>Past this, the tabs used longest ago go to sleep first.</small>
+          <div class="seg" data-key="ramLimitMb" role="radiogroup" aria-label="Memory limit"><button data-v="0" role="radio" aria-checked="false">None</button><button data-v="512" role="radio" aria-checked="false">512 MB</button><button data-v="1024" role="radio" aria-checked="false">1 GB</button><button data-v="2048" role="radio" aria-checked="false">2 GB</button><button data-v="4096" role="radio" aria-checked="false">4 GB</button></div></div>
+        <div class="limit"><b>Download limit</b><small>All connections together.</small>
+          <div class="seg" data-key="netDownKbps" role="radiogroup" aria-label="Download limit"><button data-v="0" role="radio" aria-checked="false">None</button><button data-v="256" role="radio" aria-checked="false">256 KB/s</button><button data-v="1024" role="radio" aria-checked="false">1 MB/s</button><button data-v="5120" role="radio" aria-checked="false">5 MB/s</button><button data-v="10240" role="radio" aria-checked="false">10 MB/s</button></div></div>
+        <div class="limit"><b>Upload limit</b><small>All connections together.</small>
+          <div class="seg" data-key="netUpKbps" role="radiogroup" aria-label="Upload limit"><button data-v="0" role="radio" aria-checked="false">None</button><button data-v="128" role="radio" aria-checked="false">128 KB/s</button><button data-v="512" role="radio" aria-checked="false">512 KB/s</button><button data-v="1024" role="radio" aria-checked="false">1 MB/s</button><button data-v="5120" role="radio" aria-checked="false">5 MB/s</button></div></div>
         <button class="btn wide quiet" id="sleep-others">Put the other tabs to sleep now</button>
       </div>
 
