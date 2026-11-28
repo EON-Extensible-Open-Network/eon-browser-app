@@ -324,6 +324,11 @@ impl App {
             Box::new(Waker(self.proxy.clone())),
         )
         .build();
+        // Servo's log, on stderr, only when asked for (`RUST_LOG=servo_net=debug`): for
+        // diagnosing a site, never on by default.
+        if std::env::var_os("RUST_LOG").is_some() {
+            servo.setup_logging();
+        }
         let scale = window.scale_factor();
         let full = PhysicalSize::new(size.width.max(1), size.height.max(1));
         let ui_ctx = Rc::new(ctx.offscreen_context(full));

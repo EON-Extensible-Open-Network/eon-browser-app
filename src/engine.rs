@@ -43,3 +43,17 @@ pub fn builder(
 pub fn install_crypto() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
+
+#[cfg(test)]
+mod tests {
+    /// YouTube's front page sends more than hyper's default 16 KiB of HTTP/2 headers; the
+    /// patched `servo-net` raises the limit (patches/README.md). A Servo upgrade that drops
+    /// the patch without carrying the change upstream must fail here, not on YouTube.
+    #[test]
+    fn servo_net_accepts_large_http2_headers() {
+        let manifest = include_str!("../Cargo.toml");
+        let connector = include_str!("../patches/servo-net/connector.rs");
+        assert!(manifest.contains("servo-net = { path = \"patches/servo-net\" }"));
+        assert!(connector.contains(".http2_max_header_list_size(256 * 1024)"));
+    }
+}

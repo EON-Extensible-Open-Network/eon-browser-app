@@ -5,6 +5,19 @@ SPDX-FileCopyrightText: 2026 EON contributors
 
 # Changelog
 
+## v0.0.5 — 28 November 2026
+
+**YouTube opens.** It failed with `client error (SendRequest)` because Servo's HTTP
+client keeps hyper's default limit of 16 KiB for an HTTP/2 response's headers. YouTube's
+front page sends more, so the `h2` crate reset the stream itself
+(`REQUEST_HEADER_FIELDS_TOO_LARGE`). The limit is now 256 KiB, Chrome's value, set by a
+one-line patch to Servo's `servo-net` (`patches/README.md`). A unit test fails if a Servo
+upgrade drops the patch. Video still does not play: that needs the GStreamer back end.
+
+Also: `RUST_LOG` (for example `RUST_LOG=net=debug,h2=debug`) now turns on Servo's log on
+stderr. Nothing is logged without it. That log is how this cause was found; the earlier
+guess (HTTP/2 in general) was not specific enough to fix.
+
 ## v0.0.4 — 28 November 2026
 
 **v0.0.3 could not open any page over Tor**, and this release fixes it. The route

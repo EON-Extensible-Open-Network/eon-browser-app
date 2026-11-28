@@ -5,7 +5,7 @@
 name = "eon-browser"
 description = "EON Browser: a web browser on Servo, not Chromium. Blocking built in, no telemetry, no AI, no request until you open a page."
 # Tag v0.0.0 -> 0.0.0-alpha.
-version = "0.0.4-alpha"
+version = "0.0.5-alpha"
 edition = "2021"
 rust-version = "1.98"
 license = "GPL-3.0-or-later"
@@ -69,3 +69,9 @@ cast_precision_loss = "allow"
 cast_sign_loss = "allow"
 cast_possible_wrap = "allow"
 needless_pass_by_value = "allow"
+
+# One line changed in Servo's network crate (see patches/README.md): an HTTP/2 response
+# may carry up to 256 KiB of headers, not hyper's default 16 KiB, or YouTube cannot open.
+# Remove when Servo ships the same change.
+[patch.crates-io]
+servo-net = { path = "patches/servo-net" }
