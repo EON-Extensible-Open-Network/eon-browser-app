@@ -14,6 +14,14 @@ pub fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
             "text/javascript; charset=utf-8",
             include_bytes!("ui/app.js"),
         )),
+        "/overlay.html" => Some((
+            "text/html; charset=utf-8",
+            include_bytes!("ui/overlay.html"),
+        )),
+        "/overlay.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_bytes!("ui/overlay.js"),
+        )),
         "/fonts/Geist-Variable.woff2" => Some(("font/woff2", FONT)),
         "/icons/back.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/back.svg"))),
         "/icons/forward.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/forward.svg"))),
@@ -32,6 +40,15 @@ pub fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
         "/icons/url.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/url.svg"))),
         "/icons/star.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/star.svg"))),
         "/icons/star-on.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/star-on.svg"))),
+        "/icons/route.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/route.svg"))),
+        "/icons/gauge.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/gauge.svg"))),
+        "/icons/activity.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/activity.svg"))),
+        "/icons/puzzle.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/puzzle.svg"))),
+        "/icons/sidebar.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/sidebar.svg"))),
+        "/icons/command.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/command.svg"))),
+        "/icons/moon.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/moon.svg"))),
+        "/icons/mask.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/mask.svg"))),
+        "/icons/arrow.svg" => Some(("image/svg+xml", include_bytes!("ui/icons/arrow.svg"))),
         _ => None,
     }
 }

@@ -16,6 +16,7 @@ mod browser;
 mod engine;
 mod extensions;
 mod input;
+mod monitor;
 mod pages;
 mod paths;
 mod route_client;

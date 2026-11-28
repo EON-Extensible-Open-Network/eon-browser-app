@@ -42,14 +42,28 @@ use crate::paths::Settings;
 pub const UI_HOST: &str = "ui.eon.invalid";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// A rectangle of the window in CSS pixels, from its top left. A width or height of 0
+/// means "to the window's edge".
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, serde::Deserialize)]
+pub struct Area {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
 /// What the browser needs from whatever shows it: a window, or nothing (the self-test).
 pub trait Host {
     fn redraw(&self);
     fn set_cursor(&self, cursor: Cursor);
     fn set_title(&self, title: &str);
-    /// The bar asks for this much height (CSS pixels): more while suggestions are open.
-    fn chrome_height(&self, css_px: u32);
+    /// Where the page goes, and the overlay above it while open (the interface decides).
+    fn set_layout(&self, page: Area, overlay: Option<Area>);
     fn focus_page(&self);
+    fn focus_overlay(&self) {}
+    fn focus_chrome(&self) {}
+    /// Size the views again (a woken tab has a new one).
+    fn relayout(&self) {}
     fn open_private_window(&self) {}
 }
 
@@ -76,7 +90,13 @@ pub struct Options {
 }
 
 struct Tab {
-    view: WebView,
+    /// `None` while the tab sleeps: its page is unloaded and the memory given back.
+    view: RefCell<Option<WebView>>,
+    /// Where a sleeping tab was, and its title, to show it and to wake it.
+    saved_url: RefCell<Option<Url>>,
+    saved_title: RefCell<Option<String>>,
+    /// When the person last had this tab in front of them.
+    last_active: Cell<std::time::Instant>,
     blocked: Cell<u32>,
     /// The `http://` address this load was upgraded from, to offer HTTP if HTTPS fails.
     upgraded_from: RefCell<Option<Url>>,
@@ -91,12 +111,41 @@ struct Tab {
     top: RefCell<Option<Url>>,
 }
 
+impl Tab {
+    fn view(&self) -> Option<WebView> {
+        self.view.borrow().clone()
+    }
+    fn is(&self, other: &WebView) -> bool {
+        self.view
+            .borrow()
+            .as_ref()
+            .is_some_and(|v| v.id() == other.id())
+    }
+    fn url(&self) -> Option<Url> {
+        self.view()
+            .and_then(|v| v.url())
+            .or_else(|| self.saved_url.borrow().clone())
+    }
+    fn title(&self) -> Option<String> {
+        self.view()
+            .and_then(|v| v.page_title())
+            .or_else(|| self.saved_title.borrow().clone())
+    }
+    fn asleep(&self) -> bool {
+        self.view.borrow().is_none()
+    }
+}
+
 pub struct Browser {
     servo: Servo,
     page_ctx: Rc<dyn RenderingContext>,
     scale: Cell<f32>,
     ucm: Rc<UserContentManager>,
     ui: RefCell<Option<WebView>>,
+    /// Suggestions and the command bar, above the page.
+    overlay: RefCell<Option<WebView>>,
+    page_area: Cell<Area>,
+    overlay_area: Cell<Option<Area>>,
     tabs: RefCell<Vec<Tab>>,
     active: Cell<usize>,
     profile: Profile,
@@ -112,6 +161,9 @@ pub struct Browser {
     ui_dirty: Cell<bool>,
     route: Option<std::sync::Arc<crate::route_client::RouteClient>>,
     rules_override: Option<String>,
+    monitor: RefCell<crate::monitor::Monitor>,
+    sample: Cell<crate::monitor::Sample>,
+    last_housekeeping: Cell<std::time::Instant>,
     /// Scripts to run in a page on the next turn: Servo cannot start an evaluation from
     /// inside another one's callback.
     deferred: RefCell<Vec<(WebView, String)>>,
@@ -222,6 +274,9 @@ impl Browser {
             shield: RefCell::new(build_shield(&options.data, options.rules.as_deref())),
             extensions: RefCell::new(crate::extensions::Extensions::load(&options.data)),
             rules_override: options.rules.clone(),
+            monitor: RefCell::new(crate::monitor::Monitor::default()),
+            sample: Cell::new(crate::monitor::Sample::default()),
+            last_housekeeping: Cell::new(std::time::Instant::now()),
             settings: RefCell::new(Settings::load(&options.data)),
             engines: search::catalogue(),
             servo,
@@ -229,6 +284,9 @@ impl Browser {
             scale: Cell::new(scale),
             ucm,
             ui: RefCell::new(None),
+            overlay: RefCell::new(None),
+            page_area: Cell::new(Area::default()),
+            overlay_area: Cell::new(None),
             tabs: RefCell::new(Vec::new()),
             active: Cell::new(0),
             profile,
@@ -272,11 +330,45 @@ impl Browser {
         self.ui.borrow().clone()
     }
 
+    /// Attach the overlay (suggestions, command bar), drawn in `ctx`.
+    pub fn attach_overlay(&self, ctx: Rc<dyn RenderingContext>) {
+        let Some(me) = self.rc() else { return };
+        let delegate = Rc::new(Chrome {
+            browser: Rc::downgrade(&me),
+        });
+        let view = WebViewBuilder::new(&self.servo, ctx)
+            .url(chrome_url("/overlay.html"))
+            .hidpi_scale_factor(Scale::new(self.scale.get()))
+            .delegate(delegate)
+            .build();
+        *self.overlay.borrow_mut() = Some(view);
+    }
+
+    pub fn overlay_view(&self) -> Option<WebView> {
+        self.overlay.borrow().clone()
+    }
+
+    /// Close the suggestions or the command bar.
+    pub fn close_overlay(&self) {
+        self.overlay_area.set(None);
+        self.host.set_layout(self.page_area.get(), None);
+        if let Some(ui) = self.chrome_view() {
+            ui.evaluate_javascript("window.eonOverlayClosed && eonOverlayClosed()", |_| {});
+        }
+    }
+
+    /// Ask the interface to open the command bar (`Ctrl+K`).
+    pub fn open_palette(&self) {
+        if let Some(ui) = self.chrome_view() {
+            ui.evaluate_javascript("window.eonPalette && eonPalette()", |_| {});
+        }
+    }
+
     pub fn active_view(&self) -> Option<WebView> {
         self.tabs
             .borrow()
             .get(self.active.get())
-            .map(|t| t.view.clone())
+            .and_then(Tab::view)
     }
 
     /// Close every view. Each tab holds the browser as its delegate, so the browser (and
@@ -306,6 +398,7 @@ impl Browser {
         if let (Some(r), false) = (&self.route, kind.is_empty() || kind == "direct") {
             r.set_route(&kind, &address);
         }
+        self.apply_limits();
     }
 
     pub fn open_start(&self, start: Option<Url>) {
@@ -340,23 +433,131 @@ impl Browser {
         navigate(url, allowed).url
     }
 
+    fn build_view(&self, url: Url) -> Option<WebView> {
+        let me = self.rc()?;
+        Some(
+            WebViewBuilder::new(&self.servo, self.page_ctx.clone())
+                .url(url)
+                .hidpi_scale_factor(Scale::new(self.scale.get()))
+                .delegate(me as Rc<dyn WebViewDelegate>)
+                .user_content_manager(self.ucm.clone())
+                .build(),
+        )
+    }
+
     pub fn new_tab(&self, url: Url, activate: bool) {
-        let Some(me) = self.rc() else { return };
         let url = self.prepare(&url);
-        let view = WebViewBuilder::new(&self.servo, self.page_ctx.clone())
-            .url(url)
-            .hidpi_scale_factor(Scale::new(self.scale.get()))
-            .delegate(me as Rc<dyn WebViewDelegate>)
-            .user_content_manager(self.ucm.clone())
-            .build();
-        self.add_tab(view, activate);
+        if let Some(view) = self.build_view(url) {
+            self.add_tab(view, activate);
+        }
+    }
+
+    /// Put a background tab to sleep: its page is unloaded, its address and title kept.
+    /// Returns whether it was awake.
+    pub fn sleep_tab(&self, index: usize) -> bool {
+        if index == self.active.get() {
+            return false;
+        }
+        let taken = {
+            let tabs = self.tabs.borrow();
+            let Some(t) = tabs.get(index) else {
+                return false;
+            };
+            let Some(v) = t.view() else {
+                return false;
+            };
+            *t.saved_url.borrow_mut() = self.document_url(&v).or_else(|| v.url());
+            *t.saved_title.borrow_mut() = v.page_title();
+            let taken = t.view.borrow_mut().take();
+            taken
+        };
+        drop(taken);
+        self.mark_ui();
+        true
+    }
+
+    /// Whether a tab sleeps, and where it is (for the self-test).
+    pub fn tab_info(&self, index: usize) -> Option<(bool, Option<Url>)> {
+        self.tabs.borrow().get(index).map(|t| (t.asleep(), t.url()))
+    }
+
+    /// Wake a sleeping tab: its page loads again where it was.
+    fn wake(&self, index: usize) {
+        let url = {
+            let tabs = self.tabs.borrow();
+            let Some(t) = tabs.get(index) else { return };
+            if !t.asleep() {
+                return;
+            }
+            let url = t.saved_url.borrow().clone();
+            url
+        };
+        let Some(url) = url else { return };
+        let Some(view) = self.build_view(url) else {
+            return;
+        };
+        if let Some(t) = self.tabs.borrow().get(index) {
+            *t.view.borrow_mut() = Some(view);
+        }
+    }
+
+    /// Every two seconds: read the monitor, put long-unused tabs to sleep, and enforce the
+    /// RAM limit by putting the least recently used background tabs to sleep, one a pass.
+    fn housekeeping(&self) {
+        if self.last_housekeeping.get().elapsed() < std::time::Duration::from_secs(2) {
+            return;
+        }
+        self.last_housekeeping.set(std::time::Instant::now());
+        let route_pid = self.route.as_ref().map(|r| r.pid());
+        let bytes = self.route.as_ref().map(|r| r.bytes());
+        let sample = self.monitor.borrow_mut().sample(route_pid, bytes);
+        self.sample.set(sample);
+        let (after, ram_limit) = {
+            let s = self.settings.borrow();
+            (s.sleep_after(), s.ram_limit_mb)
+        };
+        let candidates: Vec<(usize, std::time::Instant)> = self
+            .tabs
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| *i != self.active.get() && !t.asleep())
+            .map(|(i, t)| (i, t.last_active.get()))
+            .collect();
+        if let Some(after) = after {
+            for (i, at) in &candidates {
+                if at.elapsed() > after {
+                    self.sleep_tab(*i);
+                }
+            }
+        }
+        if ram_limit > 0 && sample.ram_mb > ram_limit {
+            if let Some((i, _)) = candidates.iter().min_by_key(|(_, at)| *at) {
+                self.sleep_tab(*i);
+            }
+        }
+        self.mark_ui();
+    }
+
+    /// Apply the limiter settings to the route process.
+    pub fn apply_limits(&self) {
+        let (down, up) = {
+            let s = self.settings.borrow();
+            (s.net_down_kbps, s.net_up_kbps)
+        };
+        if let Some(r) = &self.route {
+            r.set_limits(down, up);
+        }
     }
 
     fn add_tab(&self, view: WebView, activate: bool) {
         let index = {
             let mut tabs = self.tabs.borrow_mut();
             tabs.push(Tab {
-                view,
+                view: RefCell::new(Some(view)),
+                saved_url: RefCell::new(None),
+                saved_title: RefCell::new(None),
+                last_active: Cell::new(std::time::Instant::now()),
                 blocked: Cell::new(0),
                 upgraded_from: RefCell::new(None),
                 note: RefCell::new(None),
@@ -368,31 +569,41 @@ impl Browser {
         if activate || index == 0 {
             self.select(index);
         } else {
-            self.tabs.borrow()[index].view.hide();
+            if let Some(v) = self.tabs.borrow()[index].view() {
+                v.hide();
+            }
             self.mark_ui();
         }
         self.save_session();
     }
 
     pub fn select(&self, index: usize) {
+        if index >= self.tab_count() {
+            return;
+        }
+        self.wake(index);
         {
             let tabs = self.tabs.borrow();
-            if index >= tabs.len() {
-                return;
+            let now = std::time::Instant::now();
+            if let Some(previous) = tabs.get(self.active.get()) {
+                previous.last_active.set(now);
             }
             for (i, t) in tabs.iter().enumerate() {
+                let Some(v) = t.view() else { continue };
                 if i == index {
-                    t.view.show();
-                    t.view.set_focused(true);
+                    t.last_active.set(now);
+                    v.show();
+                    v.set_focused(true);
                 } else {
-                    t.view.hide();
-                    t.view.set_focused(false);
+                    v.hide();
+                    v.set_focused(false);
                 }
             }
         }
         self.active.set(index);
         self.update_title();
         self.mark_ui();
+        self.host.relayout();
         self.host.redraw();
     }
 
@@ -497,6 +708,7 @@ impl Browser {
             Shortcut::NewPrivateWindow => self.host.open_private_window(),
             Shortcut::NewIdentity => self.new_identity(),
             Shortcut::Bookmark => self.toggle_bookmark(),
+            Shortcut::Palette => self.open_palette(),
             Shortcut::History => self.new_tab(pages::url("/history"), true),
         }
     }
@@ -517,7 +729,9 @@ impl Browser {
         let names: Vec<&str> = sites.iter().map(String::as_str).collect();
         data.clear_site_data(&names, servo::StorageType::all());
         for t in self.tabs.borrow().iter() {
-            t.view.reload();
+            if let Some(v) = t.view() {
+                v.reload();
+            }
         }
         self.with_tab_active_note("New identity: new circuits, cookies cleared");
     }
@@ -573,15 +787,12 @@ impl Browser {
     }
 
     fn tab_index(&self, view: &WebView) -> Option<usize> {
-        self.tabs
-            .borrow()
-            .iter()
-            .position(|t| t.view.id() == view.id())
+        self.tabs.borrow().iter().position(|t| t.is(view))
     }
 
     fn with_tab<R>(&self, view: &WebView, f: impl FnOnce(&Tab) -> R) -> Option<R> {
         let tabs = self.tabs.borrow();
-        tabs.iter().find(|t| t.view.id() == view.id()).map(f)
+        tabs.iter().find(|t| t.is(view)).map(f)
     }
 
     fn update_title(&self) {
@@ -607,6 +818,7 @@ impl Browser {
     /// Send the bar the current state, if anything changed. Called after each turn of the
     /// event loop, so a page blocking two hundred requests updates the bar once.
     pub fn flush_ui(&self) {
+        self.housekeeping();
         if self.route.as_ref().is_some_and(|r| r.take_changed()) {
             self.ui_dirty.set(true);
         }
@@ -626,7 +838,7 @@ impl Browser {
         let tabs = self.tabs.borrow();
         let active = self.active.get().min(tabs.len().saturating_sub(1));
         let t = tabs.get(active);
-        let url = t.and_then(|t| t.view.url());
+        let url = t.and_then(Tab::url);
         let own = url
             .as_ref()
             .is_some_and(|u| u.host_str() == Some(pages::HOST));
@@ -639,9 +851,12 @@ impl Browser {
             tabs: tabs
                 .iter()
                 .map(|t| UiTab {
-                    title: t.view.page_title().unwrap_or_default(),
-                    url: t.view.url().map(|u| display(&u)).unwrap_or_default(),
-                    loading: t.view.load_status() != LoadStatus::Complete,
+                    title: t.title().unwrap_or_default(),
+                    url: t.url().map(|u| display(&u)).unwrap_or_default(),
+                    loading: t
+                        .view()
+                        .is_some_and(|v| v.load_status() != LoadStatus::Complete),
+                    asleep: t.asleep(),
                 })
                 .collect(),
             active,
@@ -650,8 +865,8 @@ impl Browser {
                 .filter(|_| !own)
                 .map(display)
                 .unwrap_or_default(),
-            can_back: t.is_some_and(|t| t.view.can_go_back()),
-            can_forward: t.is_some_and(|t| t.view.can_go_forward()),
+            can_back: t.and_then(Tab::view).is_some_and(|v| v.can_go_back()),
+            can_forward: t.and_then(Tab::view).is_some_and(|v| v.can_go_forward()),
             blocked: t.map_or(0, |t| t.blocked.get()),
             shields,
             security: match url.as_ref() {
@@ -673,6 +888,17 @@ impl Browser {
             bookmarked: url
                 .as_ref()
                 .is_some_and(|u| matches!(self.profile.bookmark_for(u), Ok(Some(_)))),
+            monitor: self.sample.get(),
+            limits: {
+                let s = self.settings.borrow();
+                UiLimits {
+                    sleep_after_minutes: s.sleep_after_minutes.unwrap_or(15),
+                    ram_limit_mb: s.ram_limit_mb,
+                    net_down_kbps: s.net_down_kbps,
+                    net_up_kbps: s.net_up_kbps,
+                }
+            },
+            route_address: self.settings.borrow().route_address.clone(),
         }
     }
 
@@ -729,7 +955,7 @@ impl Browser {
             windows: vec![WindowState {
                 tabs: tabs
                     .iter()
-                    .filter_map(|t| t.view.url())
+                    .filter_map(Tab::url)
                     .filter(|u| matches!(u.scheme(), "http" | "https"))
                     .map(|u| SavedTab {
                         url: u.to_string(),
@@ -984,6 +1210,7 @@ impl Browser {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one match over the interface's commands, each short
     fn command(&self, c: &serde_json::Value) -> serde_json::Value {
         let op = c
             .get("op")
@@ -1014,16 +1241,134 @@ impl Browser {
             "suggest" => {
                 return serde_json::json!({ "items": self.suggestions(text) });
             }
-            "height" => {
-                let px = c
-                    .get("px")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(84);
-                self.host.chrome_height(px.clamp(84, 600) as u32);
+            "layout" => {
+                if let Ok(a) =
+                    serde_json::from_value::<Area>(c.get("page").cloned().unwrap_or_default())
+                {
+                    self.page_area.set(a);
+                    self.host.set_layout(a, self.overlay_area.get());
+                }
+                return serde_json::json!({ "ok": true });
             }
+            "overlay" => {
+                let mode = c
+                    .get("mode")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("none");
+                let area =
+                    serde_json::from_value::<Area>(c.get("area").cloned().unwrap_or_default()).ok();
+                if mode == "none" || area.is_none() {
+                    self.overlay_area.set(None);
+                    self.host.set_layout(self.page_area.get(), None);
+                    return serde_json::json!({ "ok": true });
+                }
+                self.overlay_area.set(area);
+                self.host.set_layout(self.page_area.get(), area);
+                if let Some(o) = self.overlay_view() {
+                    let json = serde_json::to_string(c).unwrap_or_else(|_| "null".into());
+                    self.deferred
+                        .borrow_mut()
+                        .push((o, format!("window.eonOverlay && eonOverlay({json})")));
+                }
+                if mode == "palette" {
+                    self.host.focus_overlay();
+                }
+                return serde_json::json!({ "ok": true });
+            }
+            "closeOverlay" => {
+                self.close_overlay();
+                if c.get("focusPage").and_then(serde_json::Value::as_bool) == Some(true) {
+                    self.host.focus_page();
+                } else {
+                    self.host.focus_chrome();
+                }
+            }
+            "panel" => {
+                let name = c
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if let Some(ui) = self.chrome_view() {
+                    let lit = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".into());
+                    self.deferred
+                        .borrow_mut()
+                        .push((ui, format!("window.eonOpenPanel && eonOpenPanel({lit})")));
+                }
+            }
+            "open" => {
+                let page = c
+                    .get("page")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("newtab");
+                if page
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+                {
+                    self.new_tab(pages::url(&format!("/{page}")), true);
+                }
+            }
+            "privateWindow" => self.host.open_private_window(),
             "focusPage" => self.host.focus_page(),
             "routePage" => self.new_tab(pages::url("/route"), true),
             "bookmark" => self.toggle_bookmark(),
+            "sleepTab" => {
+                if let Some(t) = tab {
+                    self.sleep_tab(t);
+                }
+            }
+            "newIdentity" => self.new_identity(),
+            "sleepOthers" => {
+                for i in 0..self.tab_count() {
+                    self.sleep_tab(i);
+                }
+            }
+            "setRoute" => {
+                let kind = c
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("direct");
+                let address = c
+                    .get("address")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if let Some(r) = &self.route {
+                    r.set_route(kind, address);
+                }
+                {
+                    let mut s = self.settings.borrow_mut();
+                    s.route = kind.to_string();
+                    s.route_address = address.to_string();
+                }
+                if !self.private {
+                    let _ = self.settings.borrow().save(&self.data);
+                }
+            }
+            "setLimits" => {
+                let n = |k: &str| {
+                    c.get(k)
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|v| v as u32)
+                };
+                {
+                    let mut s = self.settings.borrow_mut();
+                    if let Some(v) = n("sleepAfterMinutes") {
+                        s.sleep_after_minutes = Some(v);
+                    }
+                    if let Some(v) = n("ramLimitMb") {
+                        s.ram_limit_mb = v;
+                    }
+                    if let Some(v) = n("netDownKbps") {
+                        s.net_down_kbps = v;
+                    }
+                    if let Some(v) = n("netUpKbps") {
+                        s.net_up_kbps = v;
+                    }
+                }
+                if !self.private {
+                    let _ = self.settings.borrow().save(&self.data);
+                }
+                self.apply_limits();
+            }
             _ => return serde_json::json!({ "ok": false }),
         }
         self.mark_ui();
@@ -1070,6 +1415,16 @@ struct UiTab {
     title: String,
     url: String,
     loading: bool,
+    asleep: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UiLimits {
+    sleep_after_minutes: u32,
+    ram_limit_mb: u32,
+    net_down_kbps: u32,
+    net_up_kbps: u32,
 }
 
 #[derive(Serialize)]
@@ -1092,6 +1447,9 @@ struct UiState {
     tor: String,
     /// The page in the active tab is bookmarked.
     bookmarked: bool,
+    monitor: crate::monitor::Sample,
+    limits: UiLimits,
+    route_address: String,
 }
 
 #[derive(Serialize)]

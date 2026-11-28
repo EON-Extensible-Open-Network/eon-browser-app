@@ -3,11 +3,11 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 SPDX-FileCopyrightText: 2026 EON contributors
 
-EON Browser's own interface: the tab strip and the navigation bar. It is drawn by Servo
-in its own view, above the page, and talks to the browser only through
-https://ui.eon.invalid/cmd -- a host that never resolves and that pages cannot reach.
-It has no other network access and is handed what a person reads: titles, addresses,
-counts. (madde 50)
+EON Browser's window (eon-docs/browser/design.md, v0.0.3): vertical tabs, one bar, docked
+panels. Servo draws the page into the empty #page area, whose place this file reports to
+the browser. Suggestions and the command bar live in overlay.html, above the page. This
+page talks to the browser only through https://ui.eon.invalid/cmd and is handed only what
+a person reads: titles, addresses, counts. (madde 50)
 -->
 <html lang="en">
 <head>
@@ -16,40 +16,129 @@ counts. (madde 50)
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="strip" id="strip">
-    <div class="tabs" id="tabs" role="tablist" aria-label="Tabs"></div>
-    <button class="icon new-tab" id="new-tab" title="New tab (Ctrl+T)" aria-label="New tab">
-      <img src="icons/plus.svg" alt="">
-    </button>
-    <div class="spacer"></div>
-    <div class="private-badge" id="private" hidden>Private</div>
-  </header>
+  <div class="app" id="app">
+    <aside class="side" id="side" aria-label="Tabs and tools">
+      <div class="side-head">
+        <button class="new-tab" id="new-tab" title="New tab (Ctrl+T)" aria-label="New tab">
+          <img src="icons/plus.svg" alt=""><span class="label">New tab</span><kbd>Ctrl T</kbd>
+        </button>
+      </div>
+      <div class="tabs" id="tabs" role="tablist" aria-label="Tabs"></div>
+      <nav class="tools" aria-label="Tools">
+        <button class="tool" data-panel="shield" title="Shield: what was blocked" aria-label="Shield"><img src="icons/shield.svg" alt=""><span class="label">Shield</span></button>
+        <button class="tool" data-panel="route" title="Route: Direct, Tor, proxy" aria-label="Route"><img src="icons/route.svg" alt=""><span class="label">Route</span></button>
+        <button class="tool" data-panel="limits" title="Limiters: memory, network, sleeping tabs" aria-label="Limiters"><img src="icons/gauge.svg" alt=""><span class="label">Limiters</span></button>
+        <button class="tool" data-panel="monitor" title="Monitor: memory, processor, network" aria-label="Monitor"><img src="icons/activity.svg" alt=""><span class="label">Monitor</span></button>
+        <button class="tool" data-open="extensions" title="Extensions" aria-label="Extensions"><img src="icons/puzzle.svg" alt=""><span class="label">Extensions</span></button>
+        <button class="tool" data-open="history" title="History (Ctrl+H)" aria-label="History"><img src="icons/clock.svg" alt=""><span class="label">History</span></button>
+        <button class="tool" data-open="bookmarks" title="Bookmarks" aria-label="Bookmarks"><img src="icons/star.svg" alt=""><span class="label">Bookmarks</span></button>
+        <button class="tool" id="private-window" title="New private window (Ctrl+Shift+N)" aria-label="New private window"><img src="icons/mask.svg" alt=""><span class="label">Private window</span></button>
+        <button class="tool" id="collapse" title="Narrow the sidebar" aria-label="Narrow the sidebar"><img src="icons/sidebar.svg" alt=""><span class="label">Narrow sidebar</span></button>
+      </nav>
+    </aside>
 
-  <nav class="bar">
-    <button class="icon" id="back" title="Back (Alt+Left)" aria-label="Back"><img src="icons/back.svg" alt=""></button>
-    <button class="icon" id="forward" title="Forward (Alt+Right)" aria-label="Forward"><img src="icons/forward.svg" alt=""></button>
-    <button class="icon" id="reload" title="Reload (F5)" aria-label="Reload"><img src="icons/reload.svg" alt=""></button>
-
-    <div class="field" id="field">
-      <span class="lock" id="lock" title=""><img src="icons/lock.svg" alt=""></span>
-      <input id="address" type="text" spellcheck="false" autocomplete="off"
-             placeholder="Search, or type an address" aria-label="Address and search">
-      <span class="note" id="note" hidden></span>
-      <button class="star" id="star" title="Bookmark this page (Ctrl+D)" aria-label="Bookmark this page">
-        <img src="icons/star.svg" alt="">
+    <header class="bar">
+      <button class="icon" id="back" title="Back (Alt+Left)" aria-label="Back"><img src="icons/back.svg" alt=""></button>
+      <button class="icon" id="forward" title="Forward (Alt+Right)" aria-label="Forward"><img src="icons/forward.svg" alt=""></button>
+      <button class="icon" id="reload" title="Reload (F5)" aria-label="Reload"><img src="icons/reload.svg" alt=""></button>
+      <div class="field" id="field">
+        <span class="lock" id="lock" title=""><img src="icons/lock.svg" alt=""></span>
+        <input id="address" type="text" spellcheck="false" autocomplete="off"
+               placeholder="Search, or type an address" aria-label="Address and search">
+        <span class="note" id="note" hidden></span>
+        <button class="star" id="star" title="Bookmark this page (Ctrl+D)" aria-label="Bookmark this page">
+          <img src="icons/star.svg" alt="">
+        </button>
+      </div>
+      <button class="route" id="route" data-panel="route" title="How EON Browser reaches the web" aria-label="Route">
+        <span class="route-dot"></span><span id="route-name">Direct</span>
       </button>
-    </div>
+      <button class="shield" id="shield" data-panel="shield" title="" aria-label="Blocked on this page">
+        <img src="icons/shield.svg" alt=""><span id="blocked">0</span>
+      </button>
+      <button class="icon" id="palette" title="Command bar (Ctrl+K)" aria-label="Command bar"><img src="icons/command.svg" alt=""></button>
+      <div class="private-badge" id="private" hidden>Private</div>
+    </header>
 
-    <button class="route" id="route" title="How EON Browser reaches the web" aria-label="Route">
-      <span class="route-dot" id="route-dot"></span><span id="route-name">Direct</span>
-    </button>
-    <button class="shield" id="shield" title="" aria-label="Blocking on this site">
-      <img src="icons/shield.svg" alt=""><span id="blocked">0</span>
-    </button>
-  </nav>
+    <main class="page" id="page" aria-hidden="true"></main>
 
-  <ul class="suggest" id="suggest" role="listbox" hidden></ul>
+    <section class="panel" id="panel" hidden>
+      <div class="panel-head">
+        <h2 id="panel-title">Panel</h2>
+        <button class="icon" id="panel-close" title="Close (Esc)" aria-label="Close panel"><img src="icons/close.svg" alt=""></button>
+      </div>
 
+      <div class="panel-body" data-for="shield">
+        <div class="big"><span id="p-blocked">0</span><small id="p-blocked-what">blocked on this page</small></div>
+        <div class="switch-row">
+          <span><b>Blocking on this site</b><small id="p-site"></small></span>
+          <button class="switch" id="p-shields" role="switch" aria-checked="true" aria-label="Blocking on this site"><i></i></button>
+        </div>
+        <ul class="facts">
+          <li>Ads, trackers and cookie notices are blocked with EasyList, EasyPrivacy and uBlock Origin's lists, updated on this computer.</li>
+          <li>Tracking parameters are taken out of links, and every site is opened over HTTPS first.</li>
+          <li>Extensions can add their own blocking rules. <button class="link" data-open="extensions">Extensions</button></li>
+        </ul>
+      </div>
+
+      <div class="panel-body" data-for="route">
+        <p class="lede">How your connections reach the web. Tor hides your address from the sites you
+          visit; it does not make this browser as hard to recognise as Tor Browser.</p>
+        <div class="choices" role="radiogroup" aria-label="Route">
+          <button class="choice" data-kind="direct" data-address="" role="radio" aria-checked="false"><b>Direct</b><small>Straight to each site.</small></button>
+          <button class="choice" data-kind="tor" data-address="" role="radio" aria-checked="false"><b>Tor, built in</b><small>A separate circuit for each site, renewed every ten minutes. Opens .onion addresses.</small></button>
+          <button class="choice" data-kind="socks" data-address="socks5://127.0.0.1:9150" role="radio" aria-checked="false"><b>Tor Browser's proxy</b><small>Through Tor Browser while it is open (127.0.0.1:9150).</small></button>
+          <button class="choice" data-kind="socks" data-address="socks5://127.0.0.1:9050" role="radio" aria-checked="false"><b>The tor service's proxy</b><small>Through the tor program (127.0.0.1:9050).</small></button>
+        </div>
+        <form class="own" id="own-proxy">
+          <label for="own-address"><b>Your own server</b><small>socks5://host:port or http://host:port</small></label>
+          <div class="row"><input id="own-address" placeholder="socks5://host:port" spellcheck="false" autocomplete="off"><button class="btn" type="submit">Use</button></div>
+          <p class="error" id="own-error" hidden>Write the address as socks5://host:port or http://host:port.</p>
+        </form>
+        <p class="status" id="route-status" aria-live="polite"></p>
+        <button class="btn wide" id="new-identity" hidden>New identity</button>
+      </div>
+
+      <div class="panel-body" data-for="limits">
+        <p class="lede">Keep EON Browser as light as you want it.</p>
+        <label class="field-row"><span><b>Sleeping tabs</b><small>A tab you have not looked at for a while is unloaded. Click it and it comes back.</small></span>
+          <select id="l-sleep" data-key="sleepAfterMinutes">
+            <option value="0">Never</option><option value="5">After 5 min</option><option value="15">After 15 min</option>
+            <option value="30">After 30 min</option><option value="60">After 1 hour</option>
+          </select></label>
+        <label class="field-row"><span><b>Memory limit</b><small>Past this, the tabs used longest ago go to sleep first.</small></span>
+          <select id="l-ram" data-key="ramLimitMb">
+            <option value="0">No limit</option><option value="512">512 MB</option><option value="1024">1 GB</option>
+            <option value="2048">2 GB</option><option value="4096">4 GB</option>
+          </select></label>
+        <label class="field-row"><span><b>Download limit</b><small>All connections together.</small></span>
+          <select id="l-down" data-key="netDownKbps">
+            <option value="0">No limit</option><option value="256">256 KB/s</option><option value="1024">1 MB/s</option>
+            <option value="5120">5 MB/s</option><option value="10240">10 MB/s</option>
+          </select></label>
+        <label class="field-row"><span><b>Upload limit</b><small>All connections together.</small></span>
+          <select id="l-up" data-key="netUpKbps">
+            <option value="0">No limit</option><option value="128">128 KB/s</option><option value="512">512 KB/s</option>
+            <option value="1024">1 MB/s</option><option value="5120">5 MB/s</option>
+          </select></label>
+        <button class="btn wide quiet" id="sleep-others">Put the other tabs to sleep now</button>
+      </div>
+
+      <div class="panel-body" data-for="monitor">
+        <div class="stats">
+          <div class="stat"><span>Memory</span><b id="m-ram">–</b><canvas id="c-ram" width="132" height="32" aria-hidden="true"></canvas></div>
+          <div class="stat"><span>Processor</span><b id="m-cpu">–</b><canvas id="c-cpu" width="132" height="32" aria-hidden="true"></canvas></div>
+          <div class="stat"><span>Download</span><b id="m-down">–</b><canvas id="c-down" width="132" height="32" aria-hidden="true"></canvas></div>
+          <div class="stat"><span>Upload</span><b id="m-up">–</b><canvas id="c-up" width="132" height="32" aria-hidden="true"></canvas></div>
+        </div>
+        <button class="btn quiet" id="m-pause" aria-pressed="false">Pause</button>
+        <h3>Tabs</h3>
+        <ul class="tab-list" id="m-tabs"></ul>
+        <p class="small">Read on this computer every two seconds: the browser and its route
+          process together. Nothing is sent anywhere.</p>
+      </div>
+    </section>
+  </div>
   <script src="app.js"></script>
 </body>
 </html>

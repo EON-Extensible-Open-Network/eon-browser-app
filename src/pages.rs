@@ -65,6 +65,9 @@ body { margin: 0; min-height: 100vh; display: flex; justify-content: center; }
 main { width: min(680px, 100% - 48px); padding: 12vh 0 64px; }
 h1 { font-size: 30px; line-height: 1.2; font-weight: 650; margin: 0 0 12px; letter-spacing: -0.01em; }
 p { color: var(--haze); margin: 0 0 16px; }
+a { color: var(--pulse); text-underline-offset: 3px; }
+a:hover { color: var(--mist); }
+kbd { font: 12px "Geist", sans-serif; color: var(--haze); padding: 1px 6px; border: 1px solid var(--line); border-radius: 6px; }
 .mark { width: 44px; height: 44px; border-radius: 12px; margin-bottom: 28px;
         background: linear-gradient(135deg, var(--raise), var(--ink)); display: flex; align-items: center;
         justify-content: center; border: 1px solid var(--line); }
@@ -134,7 +137,7 @@ fn newtab(chosen: Option<&str>, engines: &[SearchEngine]) -> String {
     page(
         "New tab",
         &format!(
-            "{MARK}<h1>New tab</h1><p>Type in the bar above to search or to go to an address.</p>\
+            "{MARK}<h1>New tab</h1><p>Type in the bar above to search or to go to an address. <kbd>Ctrl K</kbd> finds every command.</p>\
              <p>{engine}</p>\
              <ul class=\"facts\">\
              <li><b>Nothing is sent anywhere</b> until you open a page: no telemetry, no suggestions while you type.</li>\

@@ -9,7 +9,7 @@ A web browser on **Servo**, the open engine written in Rust — not Chromium, no
 webview (plan madde 50). Blocking built in, no telemetry, no AI, and no request at all
 until you open a page. Windows, Linux and macOS. **Early alpha.**
 
-![EON Browser on BBC News, 11 trackers blocked](docs/window.png)
+![EON Browser v0.0.3: tabs in the sidebar, the bar, the page](docs/window.png)
 
 ## What it does
 
@@ -28,9 +28,19 @@ until you open a page. Windows, Linux and macOS. **Early alpha.**
   nothing (`Ctrl+Shift+N`), the last session restored.
 - **The route**: directly, **through Tor** (Arti, the Tor Project's Rust Tor, inside the
   browser: a circuit per site, renewed every ten minutes, New identity with
-  `Ctrl+Shift+U`, `.onion` addresses), or through a proxy server you bring. Tor hides your
-  address; it does not make you as hard to recognise as Tor Browser does, and the route
-  page says so.
+  `Ctrl+Shift+U`, `.onion` addresses), **through Tor's own proxy** (Tor Browser's
+  `127.0.0.1:9150` or the tor service's `9050`), or through a SOCKS5 or HTTP server you
+  bring. Tor hides your address; it does not make you as hard to recognise as Tor Browser
+  does, and the Route panel says so.
+- **Light on memory**: a tab you have not looked at for a while goes to sleep (its page is
+  unloaded; one click brings it back), 15 minutes by default.
+- **Limiters and a monitor**, as Opera GX has them: a memory limit (past it, the tabs used
+  longest ago sleep first), download and upload limits for all connections, and a live
+  monitor of the browser's memory, processor and network use — read on your computer,
+  sent nowhere.
+- **The window**: tabs in a sidebar (narrow, or across the top if you prefer), one bar,
+  docked panels (Shield, Route, Limiters, Monitor) that narrow the page instead of covering
+  it, and a command bar (`Ctrl+K`) that finds every action.
 
 - **Extensions from Chrome, Edge, Opera and Firefox**, stage 1:
   `eon-browser --install-extension <file.crx | file.xpi | folder>` shows what the extension
@@ -48,8 +58,10 @@ is [`eon-docs/browser/plan.md`](https://github.com/EON-Extensible-Open-Network/e
 
 ## How it is built
 
-One Servo instance draws two views into the window: **the bar** (HTML/CSS/JS in `src/ui/`,
-compiled into the program) and **the page**. The bar talks to the browser only through
+One Servo instance draws three views into the window: **the interface** (HTML/CSS/JS in
+`src/ui/`, compiled into the program: sidebar, bar, panels), **the page**, in the place the
+interface reports for it, and **the overlay** (suggestions, the command bar) above the page
+while it is open. The interface talks to the browser only through
 `https://ui.eon.invalid/cmd`, a host that never resolves; pages cannot reach it. The
 browser's own pages live on `https://page.eon.invalid/` and their links act only when the
 page asking is itself one of them, so no site can change a setting.
@@ -69,10 +81,11 @@ Arti and Servo cannot share one feature-unified build (see `route/Cargo.toml`).
 
 ## Checks
 
-`cargo test`, and `--selftest`: 40 checks through the real engine against pages the
+`cargo test`, and `--selftest`: 49 checks through the real engine against pages the
 browser serves itself — blocking, element hiding, link cleaning, HTTPS-only, the user agent,
-GPC, keyboard (Turkish letters) and wheel input, the bar, the own pages, and that a site
-can neither reach the bar's bridge nor choose your search engine. Emptying the rules makes
+GPC, keyboard (Turkish letters) and wheel input, the bar, the own pages, that a site
+can neither reach the bar's bridge nor choose your search engine, the route through a
+SOCKS5 proxy, sleeping tabs, the limiters, the monitor and the command bar. Emptying the rules makes
 six of them fail, as they should.
 
 ## Licence

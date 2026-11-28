@@ -9,13 +9,18 @@
 //! stdout:              ready 127.0.0.1:<port>
 //! stdin, then:         route {"kind":"tor"} | route {"kind":"direct"} |
 //!                      route {"kind":"proxy","address":"http://host:port"} |
+//!                      route {"kind":"socks","address":"socks5://127.0.0.1:9150"} |
+//!                      limit <down bytes/s> <up bytes/s> (0: no limit) |
 //!                      new-identity | status
 //! stdout, then:        status {"route":…,"tor":…}   (on every change, and when asked)
+//!                      stats {"down":…,"up":…}       (bytes so far, each second they change)
 //! ```
 //!
 //! It exits when the browser closes its stdin, so it can never outlive the browser.
 
+mod meter;
 mod route;
+mod socks;
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -49,17 +54,34 @@ fn main() {
     };
     say(&format!("ready {}", router.local_addr()));
 
-    // Report changes in Tor's state as they happen.
+    // Report changes in Tor's state as they happen, and the traffic each second.
     let watcher = router.clone();
     std::thread::spawn(move || {
         let mut last = String::new();
+        let mut last_stats = (u64::MAX, u64::MAX);
+        let mut tick = 0u32;
         loop {
             let now = status(&watcher);
             if now != last {
                 say(&format!("status {now}"));
                 last = now;
             }
-            std::thread::sleep(Duration::from_millis(300));
+            tick += 1;
+            if tick.is_multiple_of(3) {
+                let m = &watcher.meter;
+                let stats = (
+                    m.down.load(std::sync::atomic::Ordering::Relaxed),
+                    m.up.load(std::sync::atomic::Ordering::Relaxed),
+                );
+                if stats != last_stats {
+                    say(&format!(
+                        "stats {{\"down\":{},\"up\":{}}}",
+                        stats.0, stats.1
+                    ));
+                    last_stats = stats;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(333));
         }
     });
 
@@ -70,6 +92,13 @@ fn main() {
             if let Ok(r) = serde_json::from_str::<Route>(json) {
                 router.set_route(&r);
             }
+        } else if let Some(rest) = line.strip_prefix("limit ") {
+            let mut n = rest
+                .split_whitespace()
+                .map(|x| x.parse::<u64>().unwrap_or(0));
+            router
+                .meter
+                .set_limits(n.next().unwrap_or(0), n.next().unwrap_or(0));
         } else if line == "new-identity" {
             router.new_identity();
         } else if line == "status" {

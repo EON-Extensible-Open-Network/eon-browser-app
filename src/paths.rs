@@ -32,6 +32,24 @@ pub struct Settings {
     pub route: String,
     /// The proxy server's address, for `proxy`.
     pub route_address: String,
+    /// Put a background tab to sleep after this many minutes (Firefox's and Edge's
+    /// sleeping tabs). `None` means the default, 15; `Some(0)` means never.
+    pub sleep_after_minutes: Option<u32>,
+    /// Opera GX's RAM limiter: past this many MiB, background tabs go to sleep, the least
+    /// recently used first. 0 is no limit.
+    pub ram_limit_mb: u32,
+    /// Opera GX's network limiter, KiB/s down and up. 0 is no limit.
+    pub net_down_kbps: u32,
+    pub net_up_kbps: u32,
+}
+
+impl Settings {
+    pub fn sleep_after(&self) -> Option<std::time::Duration> {
+        match self.sleep_after_minutes.unwrap_or(15) {
+            0 => None,
+            m => Some(std::time::Duration::from_secs(u64::from(m) * 60)),
+        }
+    }
 }
 
 impl Settings {

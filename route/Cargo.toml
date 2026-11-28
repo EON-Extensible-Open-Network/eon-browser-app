@@ -4,7 +4,7 @@
 [package]
 name = "eon-browser-route"
 description = "EON Browser's route process: the local proxy every connection goes through, sending it directly, through Tor (Arti) or through a proxy server the person brings."
-version = "0.0.2-alpha"
+version = "0.0.3-alpha"
 edition = "2021"
 rust-version = "1.98"
 license = "GPL-3.0-or-later"
@@ -20,7 +20,7 @@ publish = false
 # Tor (madde 50k): Arti, the Tor Project's Rust implementation; rustls, not native-tls.
 arti-client = { version = "0.48.0", default-features = false, features = ["tokio", "rustls", "compression", "onion-service-client"] }
 tor-rtcompat = { version = "0.48.0", default-features = false, features = ["tokio", "rustls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync"] }
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs"] }
 # One circuit per *site*: the public suffix list, through the core.
 eon-browser-core = { git = "https://github.com/EON-Extensible-Open-Network/eon-browser-core", rev = "3303fcd6ba6b41d27274b856da4e8a1b728c8a65", version = "0.0.0-alpha" }

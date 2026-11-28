@@ -44,6 +44,9 @@ pub enum Route {
     Tor,
     /// An HTTP proxy the person brings: `http://[user:pass@]host:port`.
     Proxy(String),
+    /// A SOCKS5 server: Tor's own proxy (`socks5://127.0.0.1:9050` for the Tor service,
+    /// `:9150` for Tor Browser) or any the person brings. Names are resolved by the server.
+    Socks(String),
 }
 
 /// What Tor is doing, for the window.
@@ -71,6 +74,8 @@ pub struct Router {
     secret: String,
     runtime: tokio::runtime::Handle,
     tor_dir: PathBuf,
+    /// What flowed through, and the person's speed limits.
+    pub meter: Arc<crate::meter::Meter>,
 }
 
 impl Router {
@@ -95,6 +100,7 @@ impl Router {
             secret,
             runtime: runtime.handle().clone(),
             tor_dir,
+            meter: Arc::new(crate::meter::Meter::default()),
         });
         let r = router.clone();
         std::thread::Builder::new()
@@ -191,6 +197,7 @@ impl Router {
         entry.0
     }
 
+    #[allow(clippy::too_many_lines)] // one match over the routes, each a few lines
     async fn serve(self: Arc<Self>, mut client: TcpStream) -> std::io::Result<()> {
         let head = read_head(&mut client).await?;
         let Some((target, auth)) = parse_connect(&head) else {
@@ -226,7 +233,7 @@ impl Router {
                         client
                             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                             .await?;
-                        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                        crate::meter::relay(&mut client, &mut upstream, &self.meter).await;
                     }
                     Err(_) => {
                         client
@@ -250,7 +257,29 @@ impl Router {
                         client
                             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                             .await?;
-                        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                        crate::meter::relay(&mut client, &mut upstream, &self.meter).await;
+                    }
+                    Err(_) => {
+                        client
+                            .write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                            .await?;
+                    }
+                }
+            }
+            Route::Socks(server) => {
+                let Some((s_host, s_port, creds)) = crate::socks::parse(&server) else {
+                    return client
+                        .write_all(b"HTTP/1.1 502 The SOCKS address is not usable\r\n\r\n")
+                        .await;
+                };
+                match crate::socks::connect((s_host.as_str(), s_port), creds.as_ref(), &host, port)
+                    .await
+                {
+                    Ok(mut upstream) => {
+                        client
+                            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                            .await?;
+                        crate::meter::relay(&mut client, &mut upstream, &self.meter).await;
                     }
                     Err(_) => {
                         client
@@ -281,7 +310,7 @@ impl Router {
                     client
                         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                         .await?;
-                    let _ = tokio::io::copy_bidirectional(&mut client, &mut up).await;
+                    crate::meter::relay(&mut client, &mut up, &self.meter).await;
                 } else {
                     client
                         .write_all(b"HTTP/1.1 502 The proxy refused\r\n\r\n")

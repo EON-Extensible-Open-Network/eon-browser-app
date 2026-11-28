@@ -5,7 +5,7 @@
 name = "eon-browser"
 description = "EON Browser: a web browser on Servo, not Chromium. Blocking built in, no telemetry, no AI, no request until you open a page."
 # Tag v0.0.0 -> 0.0.0-alpha.
-version = "0.0.2-alpha"
+version = "0.0.3-alpha"
 edition = "2021"
 rust-version = "1.98"
 license = "GPL-3.0-or-later"
@@ -34,6 +34,9 @@ url = "2.5.9"
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs"] }
 # Response headers for what the browser answers itself (its bar, its own pages).
 http = "1.4"
+# The monitor (madde 50l): memory and processor of the browser and its route process,
+# read on this computer. Only the process part of the crate.
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 # Messages between the interface and the browser.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"

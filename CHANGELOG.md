@@ -5,6 +5,29 @@ SPDX-FileCopyrightText: 2026 EON contributors
 
 # Changelog
 
+## v0.0.3 — 28 November 2026
+
+The owner's request: the key features of other browsers, in a window made with the design
+system (eon-docs `browser/design.md`, madde 50l).
+
+- **A new window.** Tabs in a sidebar (narrow, or across the top), one bar, and docked
+  panels — Shield, Route, Limiters, Monitor — that narrow the page rather than cover it.
+  Suggestions and the new **command bar (`Ctrl+K`)** are drawn by a third view above the
+  page, so the page never reflows for them. Keyboard first, visible focus, numbers written
+  out rather than shown by colour alone.
+- **Sleeping tabs** (Firefox, Edge): a background tab unused for 15 minutes (or what you
+  set) is unloaded; its address and title stay, and a click brings it back where it was.
+- **Limiters and a monitor** (Opera GX): a memory limit that puts the least recently used
+  tabs to sleep, download and upload limits applied in the route process to every
+  connection, and a live monitor of memory, processor and network use, read every two
+  seconds on this computer and sent nowhere.
+- **Tor's own proxy and SOCKS5 servers**: besides Tor built in (Arti), the route can go
+  through Tor Browser's `127.0.0.1:9150`, the tor service's `9050`, or any SOCKS5 or HTTP
+  server. With SOCKS5 the site's name goes to the proxy, which looks it up (no DNS leak).
+- The self-test has 49 checks (was 40): the page's place in the window, the SOCKS5 route
+  against a local server, a tab put to sleep and woken, the monitor, the limiters, and the
+  command bar running a command found by typing.
+
 ## v0.0.2 — 27 November 2026
 
 What v0.0.1 was meant to ship, with the two fixes its release found. **v0.0.1 was tagged

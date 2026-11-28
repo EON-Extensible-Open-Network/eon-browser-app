@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 EON contributors
 
-//! The window. Servo draws the bar and the page into two offscreen surfaces of the
-//! window's GL context; each frame copies them into place, the bar on top. Input goes to
-//! whichever is under the pointer, keys to whichever has focus, and the browser's own
-//! shortcuts are taken first.
+//! The window. Servo draws three views into offscreen surfaces of the window's GL context,
+//! and each frame copies them into place:
+//!
+//! 1. **the interface** (`ui.eon.invalid`), the whole window: sidebar, bar, panels;
+//! 2. **the page**, into the rectangle the interface leaves for it (it says where);
+//! 3. **the overlay** — address suggestions, the command bar — above the page, only while
+//!    it is open, so the page is never resized for it.
+//!
+//! Input goes to whichever view is under the pointer, keys to whichever has focus, and the
+//! browser's own shortcuts are taken first.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -24,16 +30,23 @@ use winit::keyboard::ModifiersState;
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{CursorIcon, Window, WindowId};
 
-use crate::browser::{Browser, Host, Options};
+use crate::browser::{Area, Browser, Host, Options};
 use crate::input;
 
-/// The bar's height when no suggestions are open (CSS pixels): tab strip + navigation.
-const BASE_CHROME: u32 = 84;
+/// Where the page sits before the interface has said (CSS px): the sidebar's width and
+/// the bar's height of the default layout.
+const DEFAULT_PAGE: Area = Area {
+    x: 240.0,
+    y: 48.0,
+    w: 0.0,
+    h: 0.0,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Chrome,
     Page,
+    Overlay,
 }
 
 #[derive(Debug)]
@@ -54,9 +67,11 @@ impl EventLoopWaker for Waker {
 /// What the browser asks of the window, kept until the next event is handled.
 struct Shared {
     window: Rc<Window>,
-    chrome_css: Cell<u32>,
+    /// The page's rectangle, CSS px; `w`/`h` of 0 mean "to the window's edge".
+    page: Cell<Area>,
+    overlay: Cell<Option<Area>>,
     relayout: Cell<bool>,
-    focus_page: Cell<bool>,
+    focus: Cell<Option<Focus>>,
     private_window: Cell<bool>,
 }
 
@@ -72,17 +87,47 @@ impl Host for WindowHost {
     fn set_title(&self, title: &str) {
         self.0.window.set_title(title);
     }
-    fn chrome_height(&self, css_px: u32) {
-        if self.0.chrome_css.replace(css_px) != css_px {
+    fn set_layout(&self, page: Area, overlay: Option<Area>) {
+        if self.0.page.replace(page) != page || self.0.overlay.replace(overlay) != overlay {
             self.0.relayout.set(true);
             self.0.window.request_redraw();
         }
     }
     fn focus_page(&self) {
-        self.0.focus_page.set(true);
+        self.0.focus.set(Some(Focus::Page));
+    }
+    fn focus_overlay(&self) {
+        self.0.focus.set(Some(Focus::Overlay));
+    }
+    fn focus_chrome(&self) {
+        self.0.focus.set(Some(Focus::Chrome));
     }
     fn open_private_window(&self) {
         self.0.private_window.set(true);
+    }
+    fn relayout(&self) {
+        self.0.relayout.set(true);
+    }
+}
+
+/// A rectangle in physical pixels, from the top left.
+#[derive(Clone, Copy)]
+struct Px {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+impl Px {
+    fn contains(self, p: PhysicalPosition<f64>) -> bool {
+        p.x >= f64::from(self.x)
+            && p.y >= f64::from(self.y)
+            && p.x < f64::from(self.x + self.w)
+            && p.y < f64::from(self.y + self.h)
+    }
+    fn size(self) -> PhysicalSize<u32> {
+        PhysicalSize::new(self.w.max(1) as u32, self.h.max(1) as u32)
     }
 }
 
@@ -91,6 +136,7 @@ struct Running {
     ctx: Rc<WindowRenderingContext>,
     ui_ctx: Rc<OffscreenRenderingContext>,
     page_ctx: Rc<OffscreenRenderingContext>,
+    overlay_ctx: Rc<OffscreenRenderingContext>,
     browser: Rc<Browser>,
     cursor: Cell<PhysicalPosition<f64>>,
     mods: Cell<ModifiersState>,
@@ -98,29 +144,50 @@ struct Running {
 }
 
 impl Running {
-    fn scale(&self) -> f64 {
-        self.shared.window.scale_factor()
+    fn to_px(&self, area: Area) -> Px {
+        let scale = self.shared.window.scale_factor();
+        let size = self.shared.window.inner_size();
+        let (win_w, win_h) = (size.width as i32, size.height as i32);
+        let px = |v: f64| (v * scale).round() as i32;
+        let left = px(area.x);
+        let top = px(area.y);
+        let width = if area.w > 0.0 {
+            px(area.w)
+        } else {
+            win_w - left
+        };
+        let height = if area.h > 0.0 {
+            px(area.h)
+        } else {
+            win_h - top
+        };
+        Px {
+            x: left.clamp(0, win_w),
+            y: top.clamp(0, win_h),
+            w: width.clamp(1, win_w),
+            h: height.clamp(1, win_h),
+        }
     }
 
-    /// Physical heights: the bar as drawn now, and the bar the page sits under.
-    fn heights(&self) -> (u32, u32) {
-        let s = self.scale();
-        let base = (f64::from(BASE_CHROME) * s).round() as u32;
-        let ui = (f64::from(self.shared.chrome_css.get().max(BASE_CHROME)) * s).round() as u32;
-        (ui, base)
+    fn page_px(&self) -> Px {
+        self.to_px(self.shared.page.get())
+    }
+
+    fn overlay_px(&self) -> Option<Px> {
+        self.shared.overlay.get().map(|a| self.to_px(a))
     }
 
     fn layout(&self) {
         let size = self.shared.window.inner_size();
-        let (ui_h, base_h) = self.heights();
         self.ctx.resize(size);
-        let page = PhysicalSize::new(size.width.max(1), size.height.saturating_sub(base_h).max(1));
-        let ui = PhysicalSize::new(size.width.max(1), ui_h.min(size.height).max(1));
         if let Some(v) = self.browser.chrome_view() {
-            v.resize(ui);
+            v.resize(PhysicalSize::new(size.width.max(1), size.height.max(1)));
         }
         if let Some(v) = self.browser.active_view() {
-            v.resize(page);
+            v.resize(self.page_px().size());
+        }
+        if let (Some(v), Some(o)) = (self.browser.overlay_view(), self.overlay_px()) {
+            v.resize(o.size());
         }
         self.shared.window.request_redraw();
     }
@@ -129,33 +196,35 @@ impl Running {
         if self.ctx.make_current().is_err() {
             return;
         }
+        let overlay = self.overlay_px();
+        if let Some(v) = self.browser.chrome_view() {
+            v.paint();
+        }
         if let Some(v) = self.browser.active_view() {
             v.paint();
         }
-        if let Some(v) = self.browser.chrome_view() {
-            v.paint();
+        if overlay.is_some() {
+            if let Some(v) = self.browser.overlay_view() {
+                v.paint();
+            }
         }
         self.ctx.prepare_for_rendering();
         let gl = self.ctx.glow_gl_api();
         let size = self.shared.window.inner_size();
-        let (w, h) = (size.width as i32, size.height as i32);
-        let (ui_h, base_h) = self.heights();
-        let (ui_h, base_h) = (ui_h as i32, base_h as i32);
-        // GL counts from the bottom: the page fills the bottom, the bar sits on top of it.
-        if let Some(blit) = self.page_ctx.render_to_parent_callback() {
-            blit(
-                &gl,
-                Rect::new(Point2D::new(0, 0), Size2D::new(w, (h - base_h).max(1))),
-            );
-        }
+        let wh = size.height as i32;
+        // GL counts from the bottom.
+        let gl_rect = |p: Px| Rect::new(Point2D::new(p.x, wh - p.y - p.h), Size2D::new(p.w, p.h));
         if let Some(blit) = self.ui_ctx.render_to_parent_callback() {
             blit(
                 &gl,
-                Rect::new(
-                    Point2D::new(0, (h - ui_h).max(0)),
-                    Size2D::new(w, ui_h.min(h)),
-                ),
+                Rect::new(Point2D::new(0, 0), Size2D::new(size.width as i32, wh)),
             );
+        }
+        if let Some(blit) = self.page_ctx.render_to_parent_callback() {
+            blit(&gl, gl_rect(self.page_px()));
+        }
+        if let (Some(o), Some(blit)) = (overlay, self.overlay_ctx.render_to_parent_callback()) {
+            blit(&gl, gl_rect(o));
         }
         self.ctx.present();
     }
@@ -163,15 +232,17 @@ impl Running {
     /// The view under the pointer and the point inside it.
     fn target(&self) -> Option<(WebView, Focus, DevicePoint)> {
         let p = self.cursor.get();
-        let (ui_h, base_h) = self.heights();
-        if p.y < f64::from(ui_h) {
-            let v = self.browser.chrome_view()?;
-            Some((v, Focus::Chrome, DevicePoint::new(p.x as f32, p.y as f32)))
-        } else {
-            let v = self.browser.active_view()?;
-            let y = p.y - f64::from(base_h);
-            Some((v, Focus::Page, DevicePoint::new(p.x as f32, y as f32)))
+        let inside =
+            |r: Px| DevicePoint::new((p.x - f64::from(r.x)) as f32, (p.y - f64::from(r.y)) as f32);
+        if let Some(o) = self.overlay_px().filter(|o| o.contains(p)) {
+            return Some((self.browser.overlay_view()?, Focus::Overlay, inside(o)));
         }
+        let page = self.page_px();
+        if page.contains(p) {
+            return Some((self.browser.active_view()?, Focus::Page, inside(page)));
+        }
+        let v = self.browser.chrome_view()?;
+        Some((v, Focus::Chrome, DevicePoint::new(p.x as f32, p.y as f32)))
     }
 
     fn set_focus(&self, f: Focus) {
@@ -182,12 +253,16 @@ impl Running {
         if let Some(page) = self.browser.active_view() {
             page.set_focused(f == Focus::Page);
         }
+        if let Some(o) = self.browser.overlay_view() {
+            o.set_focused(f == Focus::Overlay);
+        }
     }
 
     fn focused_view(&self) -> Option<WebView> {
         match self.focus.get() {
             Focus::Chrome => self.browser.chrome_view(),
             Focus::Page => self.browser.active_view(),
+            Focus::Overlay => self.browser.overlay_view(),
         }
     }
 
@@ -197,8 +272,8 @@ impl Running {
         if self.shared.relayout.replace(false) {
             self.layout();
         }
-        if self.shared.focus_page.replace(false) {
-            self.set_focus(Focus::Page);
+        if let Some(f) = self.shared.focus.take() {
+            self.set_focus(f);
         }
         if self.shared.private_window.replace(false) {
             if let Ok(exe) = std::env::current_exe() {
@@ -224,8 +299,8 @@ impl App {
             } else {
                 "EON Browser"
             })
-            .with_inner_size(LogicalSize::new(1280.0, 820.0))
-            .with_min_inner_size(LogicalSize::new(480.0, 320.0));
+            .with_inner_size(LogicalSize::new(1360.0, 860.0))
+            .with_min_inner_size(LogicalSize::new(560.0, 360.0));
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let display = event_loop.display_handle().map_err(|e| e.to_string())?;
         let handle = window.window_handle().map_err(|e| e.to_string())?;
@@ -250,19 +325,17 @@ impl App {
         )
         .build();
         let scale = window.scale_factor();
-        let base_h = (f64::from(BASE_CHROME) * scale).round() as u32;
-        let ui_ctx =
-            Rc::new(ctx.offscreen_context(PhysicalSize::new(size.width.max(1), base_h.max(1))));
-        let page_ctx = Rc::new(ctx.offscreen_context(PhysicalSize::new(
-            size.width.max(1),
-            size.height.saturating_sub(base_h).max(1),
-        )));
+        let full = PhysicalSize::new(size.width.max(1), size.height.max(1));
+        let ui_ctx = Rc::new(ctx.offscreen_context(full));
+        let page_ctx = Rc::new(ctx.offscreen_context(full));
+        let overlay_ctx = Rc::new(ctx.offscreen_context(PhysicalSize::new(640, 420)));
 
         let shared = Rc::new(Shared {
             window: window.clone(),
-            chrome_css: Cell::new(BASE_CHROME),
-            relayout: Cell::new(false),
-            focus_page: Cell::new(false),
+            page: Cell::new(DEFAULT_PAGE),
+            overlay: Cell::new(None),
+            relayout: Cell::new(true),
+            focus: Cell::new(None),
             private_window: Cell::new(false),
         });
         let browser = Browser::new(
@@ -280,18 +353,21 @@ impl App {
         );
         browser.restore_route();
         browser.attach_chrome(ui_ctx.clone());
+        browser.attach_overlay(overlay_ctx.clone());
         browser.open_start(self.start.take());
         let running = Running {
             shared,
             ctx,
             ui_ctx,
             page_ctx,
+            overlay_ctx,
             browser,
             cursor: Cell::new(PhysicalPosition::new(0.0, 0.0)),
             mods: Cell::new(ModifiersState::empty()),
             focus: Cell::new(Focus::Page),
         };
         running.set_focus(Focus::Page);
+        running.layout();
         Ok(running)
     }
 }
@@ -328,9 +404,13 @@ impl ApplicationHandler<Wake> for App {
             WindowEvent::RedrawRequested => r.paint(),
             WindowEvent::Resized(_) => r.layout(),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                for v in [r.browser.chrome_view(), r.browser.active_view()]
-                    .into_iter()
-                    .flatten()
+                for v in [
+                    r.browser.chrome_view(),
+                    r.browser.active_view(),
+                    r.browser.overlay_view(),
+                ]
+                .into_iter()
+                .flatten()
                 {
                     v.set_hidpi_scale_factor(euclid::Scale::new(scale_factor as f32));
                 }
@@ -352,6 +432,10 @@ impl ApplicationHandler<Wake> for App {
                         ElementState::Released => MouseButtonAction::Up,
                     };
                     if action == MouseButtonAction::Down && r.focus.get() != focus {
+                        // A click outside the overlay closes it, as a menu would.
+                        if r.focus.get() == Focus::Overlay {
+                            r.browser.close_overlay();
+                        }
                         r.set_focus(focus);
                     }
                     let button = match button {
@@ -396,13 +480,10 @@ impl ApplicationHandler<Wake> for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 let mods = r.mods.get();
                 if let Some(s) = input::shortcut(&event, mods) {
-                    if s == input::Shortcut::FocusAddress {
+                    if matches!(s, input::Shortcut::FocusAddress | input::Shortcut::NewTab) {
                         r.set_focus(Focus::Chrome);
                     }
                     r.browser.shortcut(s);
-                    if s == input::Shortcut::NewTab {
-                        r.set_focus(Focus::Chrome);
-                    }
                 } else if let Some(v) = r.focused_view() {
                     v.notify_input_event(InputEvent::Keyboard(input::keyboard(&event, mods)));
                 }

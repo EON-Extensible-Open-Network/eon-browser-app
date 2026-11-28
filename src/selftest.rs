@@ -41,6 +41,8 @@ impl EventLoopWaker for Waker {
 #[derive(Default)]
 struct Headless {
     redraw: Rc<Cell<bool>>,
+    page: Rc<Cell<Option<crate::browser::Area>>>,
+    overlay: Rc<Cell<Option<crate::browser::Area>>>,
 }
 
 impl Host for Headless {
@@ -49,7 +51,10 @@ impl Host for Headless {
     }
     fn set_cursor(&self, _cursor: Cursor) {}
     fn set_title(&self, _title: &str) {}
-    fn chrome_height(&self, _css_px: u32) {}
+    fn set_layout(&self, page: crate::browser::Area, overlay: Option<crate::browser::Area>) {
+        self.page.set(Some(page));
+        self.overlay.set(overlay);
+    }
     fn focus_page(&self) {}
 }
 
@@ -90,7 +95,13 @@ struct Run {
     browser: Rc<Browser>,
     rx: Receiver<()>,
     redraw: Rc<Cell<bool>>,
-    _contexts: (Rc<SoftwareRenderingContext>, Rc<SoftwareRenderingContext>),
+    _contexts: (
+        Rc<SoftwareRenderingContext>,
+        Rc<SoftwareRenderingContext>,
+        Rc<SoftwareRenderingContext>,
+    ),
+    page_area: Rc<Cell<Option<crate::browser::Area>>>,
+    overlay_area: Rc<Cell<Option<crate::browser::Area>>>,
 }
 
 impl Run {
@@ -105,6 +116,9 @@ impl Run {
                     v.paint();
                 }
                 if let Some(v) = self.browser.chrome_view() {
+                    v.paint();
+                }
+                if let Some(v) = self.browser.overlay_view() {
                     v.paint();
                 }
             }
@@ -180,6 +194,11 @@ impl Run {
         let v = self.browser.chrome_view()?;
         self.eval(&v, script)
     }
+
+    fn overlay_eval(&self, script: &str) -> Option<JSValue> {
+        let v = self.browser.overlay_view()?;
+        self.eval(&v, script)
+    }
 }
 
 fn s(v: Option<JSValue>) -> String {
@@ -236,7 +255,11 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
     let _ = std::fs::remove_dir_all(&data);
     let (tx, rx) = channel();
     let ui_ctx = Rc::new(
-        SoftwareRenderingContext::new(PhysicalSize::new(1280, 84)).map_err(|e| format!("{e:?}"))?,
+        SoftwareRenderingContext::new(PhysicalSize::new(1280, 720))
+            .map_err(|e| format!("{e:?}"))?,
+    );
+    let overlay_ctx = Rc::new(
+        SoftwareRenderingContext::new(PhysicalSize::new(560, 400)).map_err(|e| format!("{e:?}"))?,
     );
     let page_ctx = Rc::new(
         SoftwareRenderingContext::new(PhysicalSize::new(1280, 720))
@@ -276,6 +299,7 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
     let extension = install_test_extension(&data);
     let headless = Headless::default();
     let redraw = headless.redraw.clone();
+    let (page_area, overlay_area) = (headless.page.clone(), headless.overlay.clone());
     let browser = Browser::new(
         servo,
         page_ctx.clone(),
@@ -290,12 +314,15 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
         },
     );
     browser.attach_chrome(ui_ctx.clone());
+    browser.attach_overlay(overlay_ctx.clone());
     browser.open_start(None);
     let run = Run {
         browser,
         rx,
         redraw,
-        _contexts: (ui_ctx, page_ctx),
+        _contexts: (ui_ctx, page_ctx, overlay_ctx),
+        page_area,
+        overlay_area,
     };
     let mut r = Report {
         text: format!("EON Browser {} self-test\n\n", crate::browser::VERSION),
@@ -339,6 +366,15 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
         "no request reaches the network before the person opens a page",
         run.browser.requests.borrow().is_empty(),
         &format!("{:?}", run.browser.requests.borrow()),
+    );
+
+    // --- the window's layout: the interface says where the page goes ----------------
+    run.pump_until(|| run.page_area.get().is_some(), Duration::from_secs(5));
+    let area = run.page_area.get().unwrap_or_default();
+    r.check(
+        "the interface places the page beside the tabs and under the bar",
+        (area.x - 240.0).abs() < 1.0 && (area.y - 48.0).abs() < 1.0 && area.w > 900.0,
+        &format!("{area:?}"),
     );
 
     // --- the route process (madde 50k), offline -------------------------------------
@@ -589,6 +625,13 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
         &visited,
     );
 
+    window_checks(
+        &run,
+        &data,
+        report_path.parent().unwrap_or_else(|| Path::new(".")),
+        &mut r,
+    );
+
     // Shut the engine down in order before its folder goes away (see Browser::shutdown).
     run.browser.shutdown();
     let Run {
@@ -597,7 +640,7 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
         ..
     } = run;
     drop(browser);
-    // The two offscreen GL contexts are left to the process's end: surfman (on WGL)
+    // The offscreen GL contexts are left to the process's end: surfman (on WGL)
     // asserts when a context that is not current is torn down after another one.
     std::mem::forget(contexts);
     let _ = std::fs::remove_dir_all(&data);
@@ -609,6 +652,7 @@ pub fn run(report_path: &Path) -> Result<u32, String> {
 
 /// The route process: present, quiet until asked, closed to other programs, and a working
 /// tunnel for the browser. Everything here stays on 127.0.0.1.
+#[allow(clippy::too_many_lines)] // three small servers and what each proves, in order
 fn route_checks(route: Option<&crate::route_client::RouteClient>, r: &mut Report) {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -679,6 +723,184 @@ fn route_checks(route: Option<&crate::route_client::RouteClient>, r: &mut Report
         "the browser's connections go through its proxy (direct route)",
         tunnelled.as_deref() == Some("eon"),
         &format!("{tunnelled:?}"),
+    );
+
+    // Tor's own proxy, or anyone's SOCKS5 server: a fake one on 127.0.0.1 that records the
+    // name it was asked for (the name must reach the proxy, not be looked up here).
+    let Ok(socks) = TcpListener::bind("127.0.0.1:0") else {
+        return;
+    };
+    let Ok(socks_addr) = socks.local_addr() else {
+        return;
+    };
+    let (asked_tx, asked_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let Ok((mut c, _)) = socks.accept() else {
+            return;
+        };
+        let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut b = [0u8; 300];
+        // Greeting: VER, NMETHODS, METHODS.
+        if c.read(&mut b).is_err() || c.write_all(&[5, 0]).is_err() {
+            return;
+        }
+        // Request: VER CMD RSV ATYP=3 LEN NAME PORT.
+        let Ok(n) = c.read(&mut b) else { return };
+        if n > 5 && b[3] == 3 {
+            let len = b[4] as usize;
+            let name = String::from_utf8_lossy(&b[5..(5 + len).min(n)]).into_owned();
+            let _ = asked_tx.send(name);
+        }
+        let _ = c.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]);
+        if let Ok(n) = c.read(&mut b) {
+            let _ = c.write_all(&b[..n]);
+        }
+    });
+    route.set_route("socks", &format!("socks5://{socks_addr}"));
+    let start = Instant::now();
+    while route.status().kind != "socks" && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let head = format!(
+        "CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\nProxy-Authorization: {}\r\n\r\n",
+        route.proxy_authorization()
+    );
+    let through = ask(&head).and_then(|(h, mut s)| {
+        if !h.starts_with("HTTP/1.1 200") {
+            return Some(h);
+        }
+        s.write_all(b"eon").ok()?;
+        let mut b = [0u8; 3];
+        s.read_exact(&mut b).ok()?;
+        Some(String::from_utf8_lossy(&b).into_owned())
+    });
+    let asked = asked_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap_or_default();
+    r.check(
+        "a SOCKS5 proxy (Tor's own, or yours) carries the connection, and is given the name",
+        through.as_deref() == Some("eon") && asked == "example.invalid",
+        &format!("{through:?}, asked for {asked:?}"),
+    );
+    route.set_route("direct", "");
+    let start = Instant::now();
+    while route.status().kind != "direct" && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Sleeping tabs, the limiters, the monitor and the command bar (v0.0.3).
+#[allow(clippy::too_many_lines)] // one scenario per feature, read top to bottom
+fn window_checks(run: &Run, data: &Path, shots: &Path, r: &mut Report) {
+    // Tab 0 is in the background: put it to sleep, see the moon, wake it where it was.
+    let before = run.browser.tab_info(0).and_then(|(_, u)| u);
+    let slept = run.browser.sleep_tab(0);
+    let mut asleep = String::new();
+    run.pump_until(
+        || {
+            asleep = s(run.ui_eval("document.querySelectorAll('.tab.asleep').length"));
+            asleep == "1"
+        },
+        Duration::from_secs(5),
+    );
+    r.check(
+        "a background tab goes to sleep, and the sidebar shows it",
+        slept && run.browser.tab_info(0).is_some_and(|(a, _)| a) && asleep == "1",
+        &asleep,
+    );
+    run.browser.select(0);
+    let want = before.as_ref().map(ToString::to_string).unwrap_or_default();
+    let woke = run.wait_url(&want);
+    r.check(
+        "clicking a sleeping tab wakes it where it was",
+        woke && run.browser.tab_info(0).is_some_and(|(a, _)| !a),
+        &format!("{} (wanted {want})", run.url()),
+    );
+
+    // The monitor reads this computer every two seconds.
+    let mut ram = String::new();
+    run.pump_until(
+        || {
+            ram = s(run.ui_eval("String(state && state.monitor ? state.monitor.ramMb : 0)"));
+            ram.parse::<u32>().is_ok_and(|n| n > 0)
+        },
+        Duration::from_secs(6),
+    );
+    r.check(
+        "the monitor shows the browser's memory",
+        ram.parse::<u32>().is_ok_and(|n| n > 0),
+        &format!("{ram} MB"),
+    );
+
+    // The limiters are kept.
+    let _ = run.ui_eval(
+        "cmd('setLimits', { netDownKbps: 256, ramLimitMb: 2048, sleepAfterMinutes: 30 }) && 'sent'",
+    );
+    run.pump_until(
+        || crate::paths::Settings::load(data).net_down_kbps == 256,
+        Duration::from_secs(5),
+    );
+    let st = crate::paths::Settings::load(data);
+    r.check(
+        "the network, memory and sleep limits are kept",
+        st.net_down_kbps == 256 && st.ram_limit_mb == 2048 && st.sleep_after_minutes == Some(30),
+        &format!(
+            "{} KB/s, {} MB, {:?} min",
+            st.net_down_kbps, st.ram_limit_mb, st.sleep_after_minutes
+        ),
+    );
+    let _ = run.ui_eval(
+        "cmd('setLimits', { netDownKbps: 0, ramLimitMb: 0, sleepAfterMinutes: 15 }) && 'sent'",
+    );
+    run.settle(300);
+
+    // The command bar: Ctrl+K opens it over the page; typing finds a command; running it
+    // opens the panel.
+    run.browser.open_palette();
+    let mut items = String::new();
+    run.pump_until(
+        || {
+            items = s(run.overlay_eval("String(document.querySelectorAll('li').length)"));
+            items.parse::<u32>().is_ok_and(|n| n >= 10) && run.overlay_area.get().is_some()
+        },
+        Duration::from_secs(5),
+    );
+    r.check(
+        "Ctrl+K opens the command bar above the page",
+        items.parse::<u32>().is_ok_and(|n| n >= 10) && run.overlay_area.get().is_some(),
+        &format!("{items} commands, {:?}", run.overlay_area.get()),
+    );
+    run.settle(300);
+    if let Some(img) = run.browser.overlay_view().and_then(|v| run.screenshot(&v)) {
+        let _ = img.save(shots.join("selftest-palette.png"));
+    }
+    let _ = run.overlay_eval(
+        "document.getElementById('q').value = 'monitor'; filter(); run(shown[0]); 'ran'",
+    );
+    let mut title = String::new();
+    run.pump_until(
+        || {
+            title = s(run.ui_eval(
+                "document.getElementById('panel').hidden ? '' : document.getElementById('panel-title').textContent",
+            ));
+            title == "Monitor" && run.overlay_area.get().is_none()
+        },
+        Duration::from_secs(5),
+    );
+    r.check(
+        "a command found by typing runs, and the command bar closes",
+        title == "Monitor" && run.overlay_area.get().is_none(),
+        &title,
+    );
+    run.settle(2500);
+    if let Some(img) = run.browser.chrome_view().and_then(|v| run.screenshot(&v)) {
+        let _ = img.save(shots.join("selftest-panel.png"));
+    }
+    let area = run.page_area.get().unwrap_or_default();
+    r.check(
+        "a docked panel narrows the page instead of covering it",
+        area.w > 0.0 && area.x + area.w <= 1280.0 - 319.0,
+        &format!("{area:?}"),
     );
 }
 
