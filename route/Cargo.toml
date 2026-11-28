@@ -4,7 +4,7 @@
 [package]
 name = "eon-browser-route"
 description = "EON Browser's route process: the local proxy every connection goes through, sending it directly, through Tor (Arti) or through a proxy server the person brings."
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 edition = "2021"
 rust-version = "1.98"
 license = "GPL-3.0-or-later"

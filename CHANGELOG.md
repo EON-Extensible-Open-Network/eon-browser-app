@@ -5,6 +5,17 @@ SPDX-FileCopyrightText: 2026 EON contributors
 
 # Changelog
 
+## v0.0.4 — 28 November 2026
+
+**v0.0.3 could not open any page over Tor**, and this release fixes it. The route
+process's new meter wrote each piece of a connection without flushing it. A TCP stream
+sends on write, so the direct and proxy routes worked and the self-test passed. Arti's
+Tor stream holds bytes until it is flushed, so nothing reached the site and pages failed
+with `client error (Connect)`. Every write is now flushed. A unit test relays through a
+stream that, like Arti's, passes nothing on until flushed; that test fails without the
+fix. Found by checking the published v0.0.3 file in the window on check.torproject.org,
+the check that now passes.
+
 ## v0.0.3 — 28 November 2026
 
 The owner's request: the key features of other browsers, in a window made with the design

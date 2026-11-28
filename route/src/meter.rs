@@ -121,6 +121,9 @@ where
             return Ok(());
         }
         to.write_all(&buf[..n]).await?;
+        // Arti's DataStream holds written bytes until flushed (a TCP stream does not):
+        // without this, nothing reaches a site over Tor.
+        to.flush().await?;
         if let Some(wait) = meter.take(dir, n as u64) {
             tokio::time::sleep(wait).await;
         }
@@ -144,6 +147,70 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    /// A writer that, like Arti's `DataStream`, passes nothing on until it is flushed.
+    struct HoldsUntilFlushed<W> {
+        inner: W,
+        held: Vec<u8>,
+    }
+
+    impl<W: AsyncWrite + Unpin> AsyncWrite for HoldsUntilFlushed<W> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.held.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            while !self.held.is_empty() {
+                let this = &mut *self;
+                match Pin::new(&mut this.inner).poll_write(cx, &this.held) {
+                    Poll::Ready(Ok(n)) => {
+                        this.held.drain(..n);
+                    }
+                    other => return other.map(|r| r.map(|_| ())),
+                }
+            }
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            self.poll_flush(cx)
+        }
+    }
+
+    impl<W: AsyncRead + Unpin> AsyncRead for HoldsUntilFlushed<W> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_reaches_a_stream_that_waits_for_flush() {
+        let meter = Meter::default();
+        let (mut browser, client_end) = tokio::io::duplex(4096);
+        let (site_end, mut site) = tokio::io::duplex(4096);
+        let upstream = HoldsUntilFlushed {
+            inner: site_end,
+            held: Vec::new(),
+        };
+        let relay_task = tokio::spawn(async move { relay(client_end, upstream, &meter).await });
+        browser.write_all(b"hello").await.unwrap_or_default();
+        let mut got = [0u8; 5];
+        let read = tokio::time::timeout(Duration::from_secs(2), site.read_exact(&mut got)).await;
+        assert!(read.is_ok(), "the site never received the request");
+        assert_eq!(&got, b"hello");
+        drop(browser);
+        drop(site);
+        let _ = relay_task.await;
+    }
 
     #[test]
     fn counts_without_a_limit() {

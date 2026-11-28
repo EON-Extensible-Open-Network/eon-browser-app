@@ -5,7 +5,7 @@
 name = "eon-browser"
 description = "EON Browser: a web browser on Servo, not Chromium. Blocking built in, no telemetry, no AI, no request until you open a page."
 # Tag v0.0.0 -> 0.0.0-alpha.
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 edition = "2021"
 rust-version = "1.98"
 license = "GPL-3.0-or-later"
